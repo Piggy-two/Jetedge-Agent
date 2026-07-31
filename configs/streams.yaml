@@ -1,0 +1,30 @@
+# JetEdge-Agent streams configuration
+# Stage 2: 1/2/4 local video sources → nvstreammux → fakesink
+#
+# Comment out streams to test 1, 2, or 4 sources.
+
+mux:
+  output_width: 1280
+  output_height: 720
+  batch_timeout_usec: 40000   # 40ms timeout for batch formation
+
+streams:
+  - id: cam1
+    type: file
+    uri: /opt/nvidia/deepstream/deepstream-7.1/samples/streams/sample_720p.h264
+    priority: high
+
+  - id: cam2
+    type: file
+    uri: /opt/nvidia/deepstream/deepstream-7.1/samples/streams/sample_720p.h264
+    priority: normal
+
+  - id: cam3
+    type: file
+    uri: /opt/nvidia/deepstream/deepstream-7.1/samples/streams/sample_720p.h264
+    priority: normal
+
+  - id: cam4
+    type: file
+    uri: /opt/nvidia/deepstream/deepstream-7.1/samples/streams/sample_720p.h264
+    priority: low

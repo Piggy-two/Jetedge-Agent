@@ -1,0 +1,21 @@
+# Build
+build/
+
+# Large generated artifacts (never commit)
+*.engine
+*.trt
+models/
+videos/
+*.mp4
+*.h264
+*.onnx
+
+# Raw traces / logs / benchmark output
+traces/
+logs/
+*.jsonl
+benchmark_results/
+
+# Local Claude Code settings (machine-specific permissions)
+.claude/settings.local.json
+.claude/*.tmp*
