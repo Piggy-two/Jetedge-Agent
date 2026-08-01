@@ -25,6 +25,7 @@ set(CUDA_INCLUDE /usr/local/cuda/include)
 set(JETEDGE_SOURCES
   apps/jetedge_server/main.cpp
   src/common/config_loader.cpp
+  src/common/secrets.cpp
   src/events/event_engine.cpp
   src/events/event_probe.cpp
   src/events/event_writer.cpp
@@ -40,6 +41,7 @@ set(JETEDGE_SOURCES
 set(JETEDGE_HEADERS
   include/jetedge/common/logging.h
   include/jetedge/common/config_loader.h
+  include/jetedge/common/secrets.h
   include/jetedge/events/event_engine.h
   include/jetedge/events/event_probe.h
   include/jetedge/events/event_types.h

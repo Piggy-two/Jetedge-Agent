@@ -423,3 +423,40 @@ NVMM batch buffer 在 Jetson 上不能按普通像素 buffer 处理,三次迭代
 - 2 小时稳定性测试属于最终验收项。
 
 详细报告:`docs/stage6_events.md`。
+
+---
+
+## 2026-08-01 Stage 7: API 密钥管理与 Provider 策略变更
+
+### 策略变更
+
+Stage 7 原定使用 **Kimi + DeepSeek** 双 Provider，现调整为 **Qwen (通义千问) + DeepSeek**:
+
+| 项目 | 原方案 | 现方案 | 原因 |
+|---|---|---|---|
+| 视觉事件复核 | Kimi | Qwen3-VL 8B Instruct | 性价比更高($0.08/M 输入 token)，Apache 2.0 开源可自部署 |
+| 文本诊断 | DeepSeek | DeepSeek | 不变 |
+| API 端点 | — | Qwen: DashScope (`dashscope.aliyuncs.com`); DeepSeek: `platform.deepseek.com` | — |
+
+### API 密钥管理
+
+- 密钥文件: `~/.jetedge/secrets.env` (权限 600, 不进 Git)
+- 环境变量: `QWEN_API_KEY` / `DEEPSEEK_API_KEY`
+- 代码接口: `include/jetedge/common/secrets.h` → `qwen_api_key()` / `deepseek_api_key()`
+- `src/common/secrets.cpp`: 优先读环境变量, 回退解析 secrets 文件; 永不打印 key 值
+
+### 新增文件
+
+| 文件 | 操作 | 说明 |
+|---|---|---|
+| `~/.jetedge/secrets.env` | 新建 | API key 存储(不进 Git) |
+| `include/jetedge/common/secrets.h` | 新建 | Secrets 加载接口 |
+| `src/common/secrets.cpp` | 新建 | 从环境变量或文件读取 key |
+| `CMakeLists.txt` | 修改 | 加入 secrets.cpp |
+
+### 下一步
+
+- `llm_types.h` — LlmProvider enum + LlmConfig 结构体
+- `llm_queue.h/cpp` — 有界优先级异步请求队列
+- `llm_client.h/cpp` — libcurl HTTP 客户端(Qwen + DeepSeek, 超时/重试/熔断)
+- `llm_router.h/cpp` — 事件类型 → Provider 路由

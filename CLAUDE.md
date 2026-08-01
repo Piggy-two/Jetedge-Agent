@@ -9,7 +9,7 @@ Before any work, read these files in order:
 3. `docs/PROGRESS.md`
 4. `models/model_info.txt`
 
-Current scope is Stage 7 only: Kimi + DeepSeek async analysis clients, bounded async queues, HTTP reuse, timeout/retry/circuit-breaking, and schema-validated degradation (API failure must never stop the video pipeline).
+Current scope is Stage 7 only: Qwen (通义千问) + DeepSeek async analysis clients, bounded async queues, HTTP reuse, timeout/retry/circuit-breaking, and schema-validated degradation (API failure must never stop the video pipeline).
 
 Stage 6 (event engine, dedup, keyframes) is complete and accepted (2026-08-01); see `docs/stage6_events.md`.
 
@@ -43,7 +43,7 @@ Environment audit and repository skeleton
 → Jetson-side TensorRT FP16 engine and single-stream nvinfer validation
 → Four-stream detection, tracking, structured metadata, metrics
 → Event engine and asynchronous keyframe extraction
-→ Kimi visual review and DeepSeek text diagnosis
+→ Qwen visual review and DeepSeek text diagnosis
 → RTSP fault isolation and recovery
 → Deterministic adaptive scheduling
 → ftrace / CPU Affinity analysis
@@ -55,7 +55,7 @@ The engineering story is:
 
 > Under limited compute, memory, thermal, and power budgets, build a multi-stream video inference system that measures bottlenecks, recovers from failures, adjusts runtime strategies, uses cloud models only for low-frequency analysis, and allows an Agent to perform safe, verifiable, and reversible operations.
 
-The real-time pipeline must not depend on Kimi, DeepSeek, Python, the network, or an Agent.
+The real-time pipeline must not depend on Qwen, DeepSeek, Python, the network, or an Agent.
 
 ---
 
@@ -95,7 +95,7 @@ The only approved implementation stage now is:
 
 ```text
 Stage 7:
-1. Event routing: local rules stay local; ambiguous visual events → Kimi; system metrics/logs → DeepSeek.
+1. Event routing: local rules stay local; ambiguous visual events → Qwen; system metrics/logs → DeepSeek.
 2. Bounded async request queues with priority and overload shedding.
 3. Reused HTTP client/connection/TLS; timeout, limited retry, backoff, circuit breaker.
 4. Fixed prompts + schemas; dynamic data placed later; bounded output tokens.
@@ -588,12 +588,12 @@ These rules apply only after the event and LLM stages are explicitly requested.
 
 ```text
 Rule-confirmed event                  → local result, no LLM
-Ambiguous visual event                → Kimi
+Ambiguous visual event                → Qwen
 System metric, log, or performance issue → DeepSeek
 High-risk operation request           → analysis + local Policy + typed tool
 ```
 
-### Kimi rules
+### Qwen rules
 
 - Default to one ROI keyframe.
 - Add context or temporal frames only when necessary; maximum three images per event by default.
@@ -617,7 +617,7 @@ High-risk operation request           → analysis + local Policy + typed tool
 ### Latency and reliability rules
 
 - Emit the local event immediately; mark cloud analysis as pending.
-- Route to Kimi or DeepSeek by event type; do not call both by default.
+- Route to Qwen or DeepSeek by event type; do not call both by default.
 - Run independent requests concurrently when useful.
 - Reuse HTTP clients, connections, and TLS sessions.
 - Initialize worker pools and templates before the first event.
@@ -706,7 +706,7 @@ Every write operation must:
 8. keep the change only if validation passes;
 9. otherwise roll back automatically.
 
-The real-time pipeline must continue if the Agent, Python process, network, Kimi, or DeepSeek fails.
+The real-time pipeline must continue if the Agent, Python process, network, Qwen, or DeepSeek fails.
 
 ---
 

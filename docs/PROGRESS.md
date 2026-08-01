@@ -120,7 +120,7 @@
 
 ## 后续阶段
 
-- Stage 7：Kimi + DeepSeek API、异步队列和降级策略
+- Stage 7：Qwen + DeepSeek API、异步队列和降级策略
 - RTSP 故障恢复与动态调度
 - ftrace 和 CPU Affinity 分析
 - INT8 PTQ 与精度回归

@@ -9,10 +9,10 @@
 - **阶段 4 已完成并验收通过（2026-08-01）**：Jetson 上构建 TensorRT FP16 Engine 成功（`yolo11s_b1_384x640_fp16.engine`，21.81 MiB，SHA256 `c6cc41d0...a82274a`），自写 YOLO11 自定义 parser 接入单路 DeepStream `nvinfer`，单路 720p 视频 1440 帧检测正常（bus/car 高置信，与 ground truth 吻合），EOS / Ctrl-C / 内存行为全部验证通过。
 - **阶段 5 已完成并验收通过（2026-08-01）**：派生 batch-dynamic ONNX 并构建 batch=4 FP16 Engine（`yolo11s_b4_384x640_fp16.engine`，21.25 MiB，SHA256 `136bd5fd...b06818d`），四路视频 + nvstreammux（batch=4）+ nvinfer（batch=4）+ nvtracker 全链路跑通，输出结构化 JSONL（stream_id / track_id / class / confidence / bbox），per-stream input/inference/output FPS 与每帧检测数验证通过，EOS / Ctrl-C / 内存 / stream_id 映射 / track_id 稳定性全部实测通过。
 - **阶段 6 已完成并验收通过（2026-08-01）**：规则事件（appearance / disappearance / count_high / count_exit / zone_entry）+ 事件去重状态机 + 事件 JSONL（1194 行全部合法 JSON）+ 事件触发的整帧关键帧 JPEG（150 次保存、0 错误，内容与源视频 SSIM 0.985 验证）。关键帧取帧最终采用官方 `nvds_obj_enc`（GPU 编码任意 NVMM layout），此前 gst_buffer_map 直读像素与 NvBufSurfaceMap/NvBufSurface2Raw 两条路线均经实机证伪。
-- 当前准备进入阶段 7：Kimi + DeepSeek API、异步队列和降级策略。
+- 当前准备进入阶段 7：Qwen + DeepSeek API、异步队列和降级策略。
 - GitHub 同步源码、配置模板、脚本、Markdown 和 `models/model_info.txt`；模型、视频、Engine、密钥和大日志通过 `.gitignore` 排除。
 - 模型和其他大文件通过 SCP/rsync 同步，并用 SHA256 做 Windows 与 Jetson 端到端一致性验收。
-- 大模型策略：事件驱动、按需调用、异步处理；Kimi/DeepSeek/Agent 不进入实时逐帧主链路。
+- 大模型策略：事件驱动、按需调用、异步处理；Qwen/DeepSeek/Agent 不进入实时逐帧主链路。
 
 基于 Jetson Orin Nano 8GB 的多路视频边缘 AI 推理、多模态事件理解与安全智能运维平台。
 
@@ -22,8 +22,8 @@
 
 - 当前日期：2026-08-01
 - 已完成：Jetson 环境与远程开发基础、单路本地视频硬件解码、YOLO11s ONNX 导出验证、模型传输与 SHA256 一致性验收、**阶段 4（TensorRT FP16 Engine + 单路 nvinfer 检测验证）**、**阶段 5（四路检测 + Tracker + 结构化 JSONL + per-stream Metrics）**、**阶段 6（事件系统、事件去重和关键帧抽取）**
-- 当前阶段：**阶段 7——Kimi + DeepSeek 异步分析（未开始）**
-- 当前禁止提前开展：RTSP、Agent 工具执行、INT8、自适应调度（Kimi/DeepSeek 仅限异步低频分析，不进入实时主链路）
+- 当前阶段：**阶段 7——Qwen + DeepSeek 异步分析（未开始）**
+- 当前禁止提前开展：RTSP、Agent 工具执行、INT8、自适应调度（Qwen/DeepSeek 仅限异步低频分析，不进入实时主链路）
 
 当前模型信息：
 
@@ -54,7 +54,7 @@ JetEdge-Agent 面向园区、交通路口、工厂和自动驾驶测试场等多
 - 基于负载和业务优先级的确定性动态调度；
 - RTSP 断流检测、故障隔离和自动恢复；
 - ftrace、trace_marker 和 CPU Affinity 性能分析；
-- 低频事件触发的 Kimi 多模态复核；
+- 低频事件触发的 Qwen (通义千问) 多模态复核；
 - DeepSeek 文本诊断、日志归因和候选操作规划；
 - Agent 白名单工具调用、验证、审计和自动回滚。
 
@@ -67,7 +67,7 @@ JetEdge-Agent 面向园区、交通路口、工厂和自动驾驶测试场等多
 ```text
 实时主链路必须独立于云端大模型运行。
 本地规则能够确定的事件，不调用大模型。
-视觉语义不确定时调用 Kimi。
+视觉语义不确定时调用 Qwen。
 系统指标、日志和运维规划调用 DeepSeek。
 模型只产生分析或候选计划，本地策略模块负责最终执行权限。
 ```
@@ -143,7 +143,7 @@ Jetson 多路 GPU 异构推理与智能运维平台
                 │              │
                 │      ┌───────┴────────┐
                 │      ▼                ▼
-                │  Kimi 多模态      DeepSeek 文本
+                │  Qwen 多模态      DeepSeek 文本
                 │  视觉事件复核      指标与日志诊断
                 │      └───────┬────────┘
                 │              ▼
@@ -164,7 +164,7 @@ Jetson 多路 GPU 异构推理与智能运维平台
 
 ```text
 实时链路：YOLO → Tracker → Event Rule → 立即告警
-智能增强：事件路由 → 去重聚合 → Kimi 或 DeepSeek → 更新结论
+智能增强：事件路由 → 去重聚合 → Qwen 或 DeepSeek → 更新结论
 自动运维：异常 → DeepSeek 候选计划 → Policy 校验 → 执行 → 验证
 ```
 
@@ -201,7 +201,7 @@ Jetson 多路 GPU 异构推理与智能运维平台
 
 负责秒级或分钟级分析：
 
-- Kimi 对关键帧或短事件视频进行低频视觉复核；
+- Qwen 对关键帧或短事件视频进行低频视觉复核；
 - DeepSeek 分析指标、错误摘要和日志；
 - 生成事件摘要、故障原因和候选操作计划；
 - 默认异步运行；
@@ -248,7 +248,7 @@ Agent 不参与逐帧决策，也不直接操作 DeepStream 内部对象。
 
 - YOLO11s：实时目标检测；
 - Tracker：非检测帧补偿和时序事件；
-- Kimi：低频多模态事件理解；
+- Qwen (通义千问)：低频多模态事件理解；
 - DeepSeek：文本诊断、指标分析和候选操作规划；
 - 本地 Agent：策略校验、工具执行、结果验证和回滚。
 
@@ -285,12 +285,12 @@ Agent 不参与逐帧决策，也不直接操作 DeepStream 内部对象。
 
 ### 当前阶段
 
-- [ ] **阶段 7：Kimi + DeepSeek API、异步队列和降级策略。**
+- [ ] **阶段 7：Qwen + DeepSeek API、异步队列和降级策略。**
 
 阶段 7 的最小目标（待展开）：
 
 ```text
-事件路由（本地规则 / 视觉不确定→Kimi / 系统指标→DeepSeek）
+事件路由（本地规则 / 视觉不确定→Qwen / 系统指标→DeepSeek）
         ↓
 异步请求队列 + 有界优先级
         ↓
@@ -449,7 +449,7 @@ Jetson 构建 TensorRT FP16 Engine
     ↓
 事件系统和关键帧抽取
     ↓
-Kimi / DeepSeek 异步智能分析
+Qwen / DeepSeek 异步智能分析
     ↓
 RTSP 故障恢复与动态调度
     ↓
@@ -500,12 +500,12 @@ performance：YOLO11n 或 YOLO11s，interval=2
 
 ```text
 规则能够确定              → 本地处理，不调用大模型
-视觉语义不确定            → Kimi
+视觉语义不确定            → Qwen
 系统指标、日志或性能异常    → DeepSeek
 高风险且需要系统操作        → 分析结果 + DeepSeek 候选计划 + 本地 Policy
 ```
 
-### 9.3 Kimi 输入策略
+### 9.3 Qwen 输入策略
 
 - 默认只发送 1 张 ROI 关键帧；
 - 必要时增加全景图或前后帧，最多 3 张；
@@ -528,7 +528,7 @@ performance：YOLO11n 或 YOLO11s，interval=2
 ### 9.5 延迟策略
 
 - 本地事件立即告警，不等待云端响应；
-- Kimi 和 DeepSeek 按事件类型路由，不默认串行；
+- Qwen 和 DeepSeek 按事件类型路由，不默认串行；
 - 互不依赖时并行调用；
 - HTTP 客户端复用连接和 TLS 会话；
 - Worker、连接池和模板在启动时初始化；
@@ -566,7 +566,7 @@ performance：YOLO11n 或 YOLO11s，interval=2
 - Batch Size / Timeout 对比；
 - ftrace、trace_marker；
 - CPU Affinity；
-- Kimi 关键帧事件复核；
+- Qwen 关键帧事件复核；
 - DeepSeek 性能诊断；
 - Agent 性能优化；
 - Agent 故障诊断；
@@ -841,7 +841,7 @@ Agent 禁止：
 
 ### Demo 2：事件理解
 
-本地规则触发事件，抽取关键帧，Kimi 输出场景描述、风险和误报判断；本地告警不等待 Kimi。
+本地规则触发事件，抽取关键帧，Qwen 输出场景描述、风险和误报判断；本地告警不等待 Qwen。
 
 ### Demo 3：性能诊断
 
@@ -962,7 +962,7 @@ Policy 校验候选工具，保存快照，执行低风险调整，重新 Benchm
 - Metrics Exporter；
 - Grafana Dashboard；
 - 动态调度器；
-- Kimi 多模态事件复核；
+- Qwen 多模态事件复核；
 - DeepSeek 性能和故障诊断；
 - Control Server；
 - Agent Tool Registry；
