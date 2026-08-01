@@ -4,9 +4,14 @@
 
 ## 当前结论
 
-阶段 3：YOLO11s ONNX 导出、验证、传输与 SHA256 一致性验收已完成。
+- 阶段 0（环境核查）：已完成 ✓
+- 阶段 1（单路硬件解码）：已完成 ✓
+- 阶段 3（YOLO11s ONNX 导出、验证、传输与 SHA256 一致性验收）：已完成 ✓
+- 旧方案阶段 2（四路 streammux + fakesink）：已完成 ✓，代码将在新方案 Stage 5 中复用
 
 当前准备进入阶段 4：TensorRT FP16 Engine 构建和单路 DeepStream `nvinfer` 验证。
+
+> **阶段编号变更**：旧 `implementation_plan.md` 的阶段 2（四路 streammux）和阶段 3（TensorRT+Tracker+四路检测）已被 `README.md` 新方案重新组织。新方案 Stage 4 只做单路 TensorRT+nvinfer（不含 Tracker），四路检测和 Tracker 归入 Stage 5。
 
 ## 阶段 3 验收记录
 

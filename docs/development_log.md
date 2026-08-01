@@ -2,6 +2,8 @@
 
 按阶段记录：每个阶段记录实际结果、验收状态和遗留问题。不要将计划中的数字写成实测结果。
 
+> **阶段编号说明（2026-08-01）**：本日志早期采用旧方案编号（阶段 0→1→2→3）。自 2026-08-01 起，阶段编号对齐 `README.md` 新方案。旧方案"阶段 2"（四路 streammux）已完成，在新方案中对应 Stage 5 的前置工作。当前待实施的是新方案 **Stage 4**：TensorRT FP16 Engine + 单路 DeepStream `nvinfer` 验证（不含 Tracker、不含四路检测）。
+
 ---
 
 ## 阶段 0：只读环境核查与项目初始化
@@ -145,4 +147,15 @@
 
 ### 下一步
 
-阶段 3：TensorRT FP16 检测、Tracker 与结构化结果（需要准备 ONNX/Engine 模型文件）。
+**新方案 Stage 4**：TensorRT FP16 Engine + 单路 DeepStream `nvinfer` 验证。
+
+注意：新方案 Stage 4 只包含：
+1. 在 Jetson 上检查 TensorRT/DeepStream/nvinfer 实际环境
+2. 基于已验收 ONNX 构建 FP16 Engine
+3. 记录构建命令、版本、binding、warning、Engine 大小和 SHA256
+4. 单路本地视频跑通 nvinfer
+5. 验证 YOLO11 输出解析、检测框、类别、置信度、EOS、Ctrl-C 和内存行为
+
+暂不包含：四路视频、Tracker、Metrics、RTSP、事件系统、Kimi、DeepSeek、Agent、INT8。
+
+旧方案"阶段 2"代码（四路 streammux + fakesink）已实现，将在新方案 Stage 5 中复用。

@@ -185,7 +185,7 @@ Only run `git pull --ff-only` when all of the following are true:
 
 If the working tree is not clean, stop before pulling and report the exact files and risk. Do not stash, reset, clean, rebase, merge, or discard changes automatically.
 
-Do not commit or push unless explicitly requested. When requested, show the files to be committed and use one focused commit.
+Do not commit or push unless explicitly requested — except the pre-approved stage-completion auto-sync flow in 4.6. When requested, show the files to be committed and use one focused commit.
 
 ### 4.4 Large artifact transfer rules
 
@@ -225,6 +225,18 @@ Whenever a stage changes state:
 - update `models/model_info.txt` only for real model metadata changes;
 - distinguish accepted, implemented-but-unverified, blocked, and planned work;
 - never mark a feature complete based only on generated code.
+
+### 4.6 Stage-completion auto-sync (standing user request, 2026-08-01)
+
+The user has pre-approved an automatic sync flow at the end of every stage. Once a stage's acceptance checks pass on the Jetson:
+
+1. Update documentation: the status snapshot in `README.md`, `docs/PROGRESS.md`, `docs/development_log.md`, and the relevant stage report under `docs/`.
+2. Run `git status`; stage only the files involved in this stage and show them.
+3. Commit with one focused message from the suggested list in section 8.
+4. Push to GitHub.
+5. Report the commit hash and the resulting sync state.
+
+This pre-approval does not override the safety rules: never overwrite unrelated uncommitted changes, never commit secrets or large artifacts, never force push; if the working tree contains unrelated changes, stop and ask first. "Automatic" waives the per-commit permission prompt for the files listed in step 2 only; it does not waive the checks above.
 
 ---
 
