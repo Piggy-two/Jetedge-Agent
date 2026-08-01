@@ -1,0 +1,18 @@
+# JetEdge-Agent Stage 4 single-stream inference validation config.
+# One local video → nvstreammux (batch=1) → nvinfer (YOLO11s FP16) → fakesink.
+
+mux:
+  output_width: 640
+  output_height: 384
+  batch_timeout_usec: 40000
+
+inference:
+  enable: true
+  config_file_path: configs/nvinfer_yolo11s_fp16.txt
+  gie_unique_id: 1
+
+streams:
+  - id: cam1
+    type: file
+    uri: /opt/nvidia/deepstream/deepstream-7.1/samples/streams/sample_720p.h264
+    priority: high

@@ -1,7 +1,8 @@
-// Pipeline — multi-stream hardware decode → nvstreammux → fakesink (Stage 2).
+// Pipeline — multi-stream hardware decode → nvstreammux → [nvinfer] → fakesink.
 //
 // Manages the GStreamer pipeline lifecycle:
-//   SourceBin[0..N] → nvstreammux → fakesink
+//   SourceBin[0..N] → nvstreammux → nvinfer → fakesink   (inference enabled)
+//   SourceBin[0..N] → nvstreammux → fakesink             (baseline)
 
 #pragma once
 
@@ -11,6 +12,7 @@
 
 #include <gst/gst.h>
 
+#include "jetedge/inference/inference_config.h"
 #include "jetedge/pipeline/source_manager.h"
 #include "jetedge/pipeline/stream_config.h"
 
@@ -32,8 +34,10 @@ class Pipeline {
   // Build the pipeline from config.  Returns true on success.
   // stream_configs: per-source configuration (1..N entries).
   // mux_config: nvstreammux settings.
+  // infer_config: nvinfer settings (enable=false keeps the baseline path).
   bool build(const std::vector<StreamConfig>& stream_configs,
-             const MuxConfig& mux_config);
+             const MuxConfig& mux_config,
+             const inference::InferenceConfig& infer_config = {});
 
   // Run the GLib main loop (blocking).  Exits on EOS, error, or signal.
   void run();
@@ -50,6 +54,9 @@ class Pipeline {
 
   GstElement* pipeline_ = nullptr;
   GstElement* sink_ = nullptr;
+  GstElement* nvinfer_ = nullptr;
+  GstPad* nvinfer_src_pad_ = nullptr;
+  guint metadata_probe_id_ = 0;
   GMainLoop* loop_ = nullptr;
   guint bus_watch_id_ = 0;
 

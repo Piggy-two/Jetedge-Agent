@@ -30,6 +30,17 @@ bool load_streams_config(const std::string& path, StreamsConfig& config, std::st
         config.mux.batch_timeout_usec = mux_node["batch_timeout_usec"].as<int>();
     }
 
+    // ---- Inference section (optional) -------------------------------------
+    if (root["inference"]) {
+      const auto& inf_node = root["inference"];
+      if (inf_node["enable"])
+        config.inference.enable = inf_node["enable"].as<bool>();
+      if (inf_node["config_file_path"])
+        config.inference.nvinfer_config_path = inf_node["config_file_path"].as<std::string>();
+      if (inf_node["gie_unique_id"])
+        config.inference.gie_unique_id = inf_node["gie_unique_id"].as<int>();
+    }
+
     // ---- Streams section ---------------------------------------------------
     const auto& streams_node = root["streams"];
     if (!streams_node || !streams_node.IsSequence()) {

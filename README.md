@@ -6,7 +6,8 @@
 - ONNX Checker、ONNX Runtime inference、NaN/Inf check 均为 `PASSED`。
 - Windows 与 Jetson SHA256 已确认一致：`41abd2ff906712b41c60de9b7d5d5f09918e23a331d80cc0926071600fd3e078`。
 - Jetson 模型路径：`/home/seeed/JetEdge-Agent/models/yolo11s.onnx`。
-- 当前只准备进入阶段 4：在 Jetson 上构建 TensorRT FP16 Engine，并完成单路 DeepStream `nvinfer` 验证。
+- **阶段 4 已完成并验收通过（2026-08-01）**：Jetson 上构建 TensorRT FP16 Engine 成功（`yolo11s_b1_384x640_fp16.engine`，21.81 MiB，SHA256 `c6cc41d0...a82274a`），自写 YOLO11 自定义 parser 接入单路 DeepStream `nvinfer`，单路 720p 视频 1440 帧检测正常（bus/car 高置信，与 ground truth 吻合），EOS / Ctrl-C / 内存行为全部验证通过。
+- 当前准备进入阶段 5：四路检测、Tracker、结构化输出和 Metrics。
 - GitHub 同步源码、配置模板、脚本、Markdown 和 `models/model_info.txt`；模型、视频、Engine、密钥和大日志通过 `.gitignore` 排除。
 - 模型和其他大文件通过 SCP/rsync 同步，并用 SHA256 做 Windows 与 Jetson 端到端一致性验收。
 - 大模型策略：事件驱动、按需调用、异步处理；Kimi/DeepSeek/Agent 不进入实时逐帧主链路。
@@ -18,9 +19,9 @@
 ## 当前状态快照
 
 - 当前日期：2026-08-01
-- 已完成：Jetson 环境与远程开发基础、单路本地视频硬件解码、YOLO11s ONNX 导出验证、模型传输与 SHA256 一致性验收
-- 当前阶段：**阶段 4——在 Jetson 上构建 TensorRT FP16 Engine，并完成单路 DeepStream `nvinfer` 检测验证**
-- 当前禁止提前开展：四路检测、Tracker、Metrics、事件系统、Kimi、DeepSeek、Agent 工具执行、INT8
+- 已完成：Jetson 环境与远程开发基础、单路本地视频硬件解码、YOLO11s ONNX 导出验证、模型传输与 SHA256 一致性验收、**阶段 4（TensorRT FP16 Engine + 单路 nvinfer 检测验证）**
+- 当前阶段：**阶段 5——四路检测、Tracker、结构化输出和 Metrics**
+- 当前禁止提前开展：RTSP、事件系统、Kimi、DeepSeek、Agent 工具执行、INT8
 
 当前模型信息：
 
@@ -270,30 +271,28 @@ Agent 不参与逐帧决策，也不直接操作 DeepStream 内部对象。
 - [x] 生成 `models/model_info.txt`；
 - [x] ONNX 和 `model_info.txt` 传输到 Jetson；
 - [x] Windows 与 Jetson SHA256 一致性验收。
+- [x] 阶段 4：Jetson 上构建 TensorRT FP16 Engine（`yolo11s_b1_384x640_fp16.engine`，21.81 MiB，SHA256 `c6cc41d0...a82274a`）；
+- [x] 阶段 4：自写 YOLO11 自定义 parser（`src/inference/yolo11_parser.cpp`）并接入单路 DeepStream `nvinfer`；
+- [x] 阶段 4：单路 720p 视频验证——1440 帧检测正常（bus/car 高置信，与 ground truth 吻合）、EOS / Ctrl-C / 内存行为通过。
 
 ### 当前阶段
 
-- [ ] **阶段 4：TensorRT FP16 Engine + 单路 DeepStream `nvinfer` 检测验证。**
+- [ ] **阶段 5：四路检测、Tracker、结构化输出和 Metrics。**
 
-阶段 4 的最小目标：
+阶段 5 的最小目标：
 
 ```text
-检查 Jetson 实机 TensorRT / DeepStream 环境
+四路视频 + nvstreammux（batch=4）+ nvinfer（batch=4）
         ↓
-使用 yolo11s.onnx 构建 FP16 Engine
+nvtracker 目标追踪
         ↓
-检查输入输出 Binding
+结构化 JSONL 输出（stream_id / track_id / class / bbox / confidence）
         ↓
-配置 nvinfer 和 YOLO11 输出解析
-        ↓
-使用单路本地视频验证检测结果
+每路 FPS 与基础 Metrics
 ```
 
-阶段 4 当前不包含：
+阶段 5 当前不包含：
 
-- 四路视频；
-- Tracker；
-- Metrics；
 - RTSP；
 - 事件系统；
 - Kimi；
@@ -303,7 +302,7 @@ Agent 不参与逐帧决策，也不直接操作 DeepStream 内部对象。
 
 ### 后续阶段
 
-- [ ] 阶段 5：四路检测、Tracker、结构化输出和 Metrics；
+- [ ] 阶段 6：事件系统、事件去重和关键帧抽取；
 - [ ] 阶段 6：事件系统、事件去重和关键帧抽取；
 - [ ] 阶段 7：Kimi + DeepSeek API、异步队列和降级策略；
 - [ ] 阶段 8：Agent 白名单工具调用、验证、审计和回滚；
@@ -852,19 +851,19 @@ Policy 校验候选工具，保存快照，执行低风险调整，重新 Benchm
 
 ## 20. 验收标准
 
-### 阶段 4
+### 阶段 4（2026-08-01 验收通过）
 
-- [ ] 确认 Jetson TensorRT / DeepStream / GStreamer 实机版本；
-- [ ] `trtexec` 能解析 `yolo11s.onnx`；
-- [ ] FP16 Engine 构建成功；
-- [ ] Engine 输入输出 Binding 符合预期；
-- [ ] 单路本地视频硬件解码成功；
-- [ ] `nvinfer` 加载 Engine 成功；
-- [ ] YOLO11 输出解析正确；
-- [ ] 检测框、类别和置信度合理；
-- [ ] Pipeline 正常处理 EOS；
-- [ ] Ctrl-C 安全退出；
-- [ ] 无明显持续内存增长。
+- [x] 确认 Jetson TensorRT / DeepStream / GStreamer 实机版本（TRT 10.3.0 / DS 7.1.0 / GStreamer 1.20.3）；
+- [x] `trtexec` 能解析 `yolo11s.onnx`；
+- [x] FP16 Engine 构建成功（21.81 MiB，无 warning，SHA256 `c6cc41d0...a82274a`）；
+- [x] Engine 输入输出 Binding 符合预期（images `1x3x384x640` → output0 `1x84x5040`）；
+- [x] 单路本地视频硬件解码成功；
+- [x] `nvinfer` 加载 Engine 成功；
+- [x] YOLO11 输出解析正确（自写自定义 parser，输出实测为绝对像素坐标 + 已 sigmoid 的 class scores）；
+- [x] 检测框、类别和置信度合理（每帧 8-16 个目标，bus conf=0.95 / car conf=0.94，与 ground truth 吻合）；
+- [x] Pipeline 正常处理 EOS；
+- [x] Ctrl-C 安全退出；
+- [x] 无明显持续内存增长（RSS 306.6 → 307.4 MiB）。
 
 ### 最终基础能力
 

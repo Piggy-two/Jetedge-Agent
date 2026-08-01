@@ -1,12 +1,20 @@
 # JetEdge-Agent streams configuration
-# Stage 2: 1/2/4 local video sources → nvstreammux → fakesink
+# Stage 2 baseline: 1/2/4 local video sources → nvstreammux → fakesink.
+# Stage 4 single-stream inference: use configs/streams_stage4.yaml instead
+# (nvinfer config batch-size=1 does not match a 4-stream mux).
 #
+# Set inference.enable to true only for 1-stream runs.
 # Comment out streams to test 1, 2, or 4 sources.
 
 mux:
   output_width: 1280
   output_height: 720
   batch_timeout_usec: 40000   # 40ms timeout for batch formation
+
+inference:
+  enable: false
+  config_file_path: configs/nvinfer_yolo11s_fp16.txt
+  gie_unique_id: 1
 
 streams:
   - id: cam1

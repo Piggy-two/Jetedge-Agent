@@ -7,6 +7,7 @@
 #include <string>
 #include <vector>
 
+#include "jetedge/inference/inference_config.h"
 #include "jetedge/pipeline/stream_config.h"
 
 namespace jetedge {
@@ -14,6 +15,7 @@ namespace common {
 
 struct StreamsConfig {
   pipeline::MuxConfig mux;
+  inference::InferenceConfig inference;
   std::vector<pipeline::StreamConfig> streams;
 };
 

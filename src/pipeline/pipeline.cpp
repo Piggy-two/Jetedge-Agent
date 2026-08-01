@@ -1,8 +1,9 @@
-// Pipeline implementation — Stage 2 multi-stream decode → nvstreammux → fakesink.
+// Pipeline implementation — decode → nvstreammux → nvinfer → fakesink.
 
 #include "jetedge/pipeline/pipeline.h"
 
 #include "jetedge/common/logging.h"
+#include "jetedge/inference/metadata_probe.h"
 
 namespace jetedge {
 namespace pipeline {
@@ -12,7 +13,8 @@ Pipeline::~Pipeline() {
 }
 
 bool Pipeline::build(const std::vector<StreamConfig>& stream_configs,
-                     const MuxConfig& mux_config) {
+                     const MuxConfig& mux_config,
+                     const inference::InferenceConfig& infer_config) {
   if (stream_configs.empty()) {
     LOG_ERROR("pipeline", "", "build", "PIPE001", "%s", "no streams configured");
     return false;
@@ -41,11 +43,47 @@ bool Pipeline::build(const std::vector<StreamConfig>& stream_configs,
     return false;
   }
 
-  // 4. Link streammux → fakesink.
-  if (!gst_element_link(source_mgr_->streammux(), sink_)) {
-    LOG_ERROR("pipeline", "", "build", "PIPE005", "%s",
-              "failed to link streammux → fakesink");
-    return false;
+  // 4. Link streammux → [nvinfer] → fakesink.
+  if (infer_config.enable) {
+    if (infer_config.nvinfer_config_path.empty()) {
+      LOG_ERROR("pipeline", "", "build", "INFER001", "%s",
+                "inference enabled but config_file_path is empty");
+      return false;
+    }
+
+    nvinfer_ = gst_element_factory_make("nvinfer", "primary-infer");
+    if (!nvinfer_) {
+      LOG_ERROR("pipeline", "", "build", "INFER002", "%s",
+                "failed to create nvinfer element");
+      return false;
+    }
+    g_object_set(G_OBJECT(nvinfer_),
+                 "config-file-path", infer_config.nvinfer_config_path.c_str(),
+                 "unique-id", infer_config.gie_unique_id,
+                 nullptr);
+    gst_bin_add(GST_BIN(pipeline_), nvinfer_);
+
+    if (!gst_element_link_many(source_mgr_->streammux(), nvinfer_, sink_, nullptr)) {
+      LOG_ERROR("pipeline", "", "build", "INFER003", "%s",
+                "failed to link streammux → nvinfer → fakesink");
+      return false;
+    }
+
+    nvinfer_src_pad_ = gst_element_get_static_pad(nvinfer_, "src");
+    if (nvinfer_src_pad_) {
+      metadata_probe_id_ = inference::install_metadata_probe(nvinfer_src_pad_);
+      if (metadata_probe_id_ != 0) {
+        LOG_INFO("pipeline", "metadata probe installed on nvinfer src pad");
+      } else {
+        LOG_WARN("pipeline", "failed to install metadata probe on nvinfer src pad");
+      }
+    }
+  } else {
+    if (!gst_element_link(source_mgr_->streammux(), sink_)) {
+      LOG_ERROR("pipeline", "", "build", "PIPE005", "%s",
+                "failed to link streammux → fakesink");
+      return false;
+    }
   }
 
   // 5. Install bus watch.
@@ -153,12 +191,21 @@ gboolean Pipeline::on_bus_message(GstBus* /*bus*/, GstMessage* msg, gpointer use
 // ---- Helpers ----------------------------------------------------------------
 
 void Pipeline::release_resources() {
+  if (metadata_probe_id_ != 0 && nvinfer_src_pad_) {
+    gst_pad_remove_probe(nvinfer_src_pad_, metadata_probe_id_);
+    metadata_probe_id_ = 0;
+  }
+  if (nvinfer_src_pad_) {
+    gst_object_unref(nvinfer_src_pad_);
+    nvinfer_src_pad_ = nullptr;
+  }
   if (pipeline_) {
     gst_element_set_state(pipeline_, GST_STATE_NULL);
     gst_object_unref(GST_OBJECT(pipeline_));
     pipeline_ = nullptr;
   }
   sink_ = nullptr;
+  nvinfer_ = nullptr;
   source_mgr_.reset();
 
   if (loop_) {
