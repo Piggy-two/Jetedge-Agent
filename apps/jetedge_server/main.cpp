@@ -86,7 +86,7 @@ int main(int argc, char* argv[]) {
   g_pipeline = &pipeline;
 
   if (!pipeline.build(config.streams, config.mux, config.inference,
-                      config.tracker, config.output)) {
+                      config.tracker, config.output, config.events)) {
     LOG_ERROR("main", "", "init", "BUILD010", "%s", "pipeline build failed");
     gst_deinit();
     return EXIT_FAILURE;

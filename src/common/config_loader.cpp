@@ -69,6 +69,74 @@ bool load_streams_config(const std::string& path, StreamsConfig& config, std::st
         config.output.fps_report_interval_sec = out_node["fps_report_interval_sec"].as<int>();
     }
 
+    // ---- Events section (optional, Stage 6) ---------------------------------
+    if (root["events"]) {
+      const auto& ev_node = root["events"];
+      if (ev_node["enable"])
+        config.events.enable = ev_node["enable"].as<bool>();
+      if (ev_node["jsonl_path"])
+        config.events.jsonl_path = ev_node["jsonl_path"].as<std::string>();
+      if (ev_node["keyframe_dir"])
+        config.events.keyframe_dir = ev_node["keyframe_dir"].as<std::string>();
+      if (ev_node["max_keyframes"]) {
+        const int v = ev_node["max_keyframes"].as<int>();
+        if (v < 0) { error_out = "events.max_keyframes must be >= 0"; return false; }
+        config.events.max_keyframes = v;
+      }
+      if (ev_node["jpeg_quality"]) {
+        const int v = ev_node["jpeg_quality"].as<int>();
+        if (v < 1 || v > 100) { error_out = "events.jpeg_quality must be in [1,100]"; return false; }
+        config.events.jpeg_quality = v;
+      }
+      if (ev_node["disappear_grace_frames"]) {
+        const int v = ev_node["disappear_grace_frames"].as<int>();
+        if (v < 0) { error_out = "events.disappear_grace_frames must be >= 0"; return false; }
+        config.events.disappear_grace_frames = static_cast<uint64_t>(v);
+      }
+      if (ev_node["count_threshold"]) {
+        const int v = ev_node["count_threshold"].as<int>();
+        if (v < 1) { error_out = "events.count_threshold must be >= 1"; return false; }
+        config.events.count_threshold = v;
+      }
+      if (ev_node["count_hysteresis"]) {
+        const int v = ev_node["count_hysteresis"].as<int>();
+        if (v < 0 || v >= config.events.count_threshold) {
+          error_out = "events.count_hysteresis must be in [0, count_threshold)";
+          return false;
+        }
+        config.events.count_hysteresis = v;
+      }
+      if (ev_node["classes"]) {
+        for (const auto& c : ev_node["classes"]) {
+          const int v = c.as<int>();
+          if (v < 0) { error_out = "events.classes must contain non-negative ids"; return false; }
+          config.events.classes.push_back(v);
+        }
+      }
+      if (ev_node["zones"]) {
+        for (const auto& z : ev_node["zones"]) {
+          events::ZoneRule zone;
+          if (!z["name"]) { error_out = "events.zones[].name is required"; return false; }
+          zone.name = z["name"].as<std::string>();
+          if (zone.name.empty()) { error_out = "events.zones[].name must not be empty"; return false; }
+          if (z["stream_id"]) zone.stream_id = z["stream_id"].as<std::string>();
+          if (!z["rect"] || z["rect"].size() != 4) {
+            error_out = "events.zones[].rect must be [left, top, width, height]";
+            return false;
+          }
+          zone.left   = z["rect"][0].as<float>();
+          zone.top    = z["rect"][1].as<float>();
+          zone.width  = z["rect"][2].as<float>();
+          zone.height = z["rect"][3].as<float>();
+          if (zone.width <= 0 || zone.height <= 0) {
+            error_out = "events.zones[].rect width/height must be > 0";
+            return false;
+          }
+          config.events.zones.push_back(std::move(zone));
+        }
+      }
+    }
+
     // ---- Streams section ---------------------------------------------------
     const auto& streams_node = root["streams"];
     if (!streams_node || !streams_node.IsSequence()) {

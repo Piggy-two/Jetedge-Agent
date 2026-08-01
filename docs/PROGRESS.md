@@ -10,6 +10,7 @@
 - 旧方案阶段 2（四路 streammux + fakesink）：已完成 ✓，代码已在新方案 Stage 5 中复用
 - 阶段 4（TensorRT FP16 Engine + 单路 nvinfer 验证）：已完成 ✓（2026-08-01）
 - **阶段 5（四路检测 + Tracker + 结构化 JSONL + per-stream Metrics）：已完成 ✓（2026-08-01）**
+- **阶段 6（事件系统、事件去重和关键帧抽取）：已完成 ✓（2026-08-01）**
 
 > **阶段编号变更**：旧 `implementation_plan.md` 的阶段 2（四路 streammux）和阶段 3（TensorRT+Tracker+四路检测）已被 `README.md` 新方案重新组织。新方案 Stage 4 只做单路 TensorRT+nvinfer（不含 Tracker），四路检测和 Tracker 归入 Stage 5。
 
@@ -83,9 +84,43 @@
 - JSONL 每行记录 tracker 之后的 obj_meta（confidence 保留检测置信度，track_id 由 NvDCF 分配）
 - Stage 6 事件系统未开始
 
-## 阶段 5 待做（后续阶段）
+## 阶段 6 验收记录（2026-08-01）
 
-- Stage 6：事件系统、事件去重和关键帧抽取
+### 事件引擎与关键帧
+
+- 事件系统:appearance / disappearance(grace=15 帧)/ count_high(threshold=3, 滞回=1)/ count_exit / zone_entry(road [0,250,1280,470] @ cam1)
+- 事件 JSONL:1194 行,逐行 JSON 校验 **0 失败**;字段 ts_ms/stream_id/frame_num/event/class_id/class/track_id/confidence/bbox/count/zone/keyframe
+- 事件分布:cam1 appearance 369 / disappearance 369 / count_high 33 / count_exit 32 / zone_entry 369;cam2/3/4 少量
+- 关键帧:150 次保存成功(cap=150),113 个唯一文件(同毫秒多事件同名覆盖,属已知口径),**0 错误**
+- 关键帧内容:cam1 keyframe vs 源视频同帧 SSIM=0.985;cam2 vs office 0.976 / vs bus/car -0.028(stream 映射精确)
+
+### 关键帧取帧技术路线(核心攻关)
+
+1. gst_buffer_map 直读像素 → 失败:NVMM buffer map 出的是 `NvBufSurface*`(64 B)而非像素(deepstream-test4 模式确认);
+2. NvBufSurfaceMap CPU 映射 + NvBufSurface2Raw 兜底 → 部分成功:PITCH surface 可 CPU map,但 batch 内 layout 混合,BLOCK_LINEAR 的 `NvBufSurface2Raw` UV plane 复制失败;
+3. **官方 nvds_obj_enc(isFrame=1)** → 验收通过:`libnvds_batch_jpegenc` GPU 编码任意 layout 的整帧为 JPEG,输出经 NVDS_CROP_IMAGE_META 读回,写文件。surface 索引语义使用 `frame_meta->batch_id`(nvdsmeta.h 文档化)。
+
+### 修复的 bug
+
+- 事件 JSONL `keyframe`/`zone` 字段裸值无引号 → 全部行非法 JSON(上一会话仅数行数漏检,本次逐行 json 校验暴露);
+- keyframe 初版对 NVMM buffer 的像素误读(KFW011 buffer too small size=64)。
+
+### 验收结果摘要
+
+| 检查项 | 结果 |
+|---|---|
+| 4 路不同视频 2072 帧 | EXIT=0,cam1 1442 / cam2 163 / cam3 288 / cam4 179 |
+| 事件 JSONL | 1194 行全部合法 JSON |
+| 关键帧 | 150 次保存、0 错误、内容 SSIM 0.985 验证 |
+| EOS / Ctrl-C | 每流 flush + 优雅退出 EXIT=0 |
+| 内存 | RSS 619.8 → 628.0 MB 收敛,无持续增长 |
+| 单元测试 | test_event_engine ALL PASS |
+
+详细报告:`docs/stage6_events.md`。
+
+## 后续阶段
+
+- Stage 7：Kimi + DeepSeek API、异步队列和降级策略
 - RTSP 故障恢复与动态调度
 - ftrace 和 CPU Affinity 分析
 - INT8 PTQ 与精度回归

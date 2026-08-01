@@ -365,3 +365,61 @@ nvtracker 目标追踪
 - `streams.yaml`（Stage 2 baseline）的 inference 仍保持 `enable: false`；Stage 5 使用 `streams_stage5.yaml`。
 - JSONL 的 confidence 为检测置信度（nvtracker 保留 obj_meta->confidence）；tracker 自身置信度（shadow 状态等）未输出，留待 Stage 6 事件系统需要时补充。
 - 下一阶段 Stage 6（事件系统、去重、关键帧）尚未开始。
+
+---
+
+## 2026-08-01 Stage 6:事件系统、事件去重与关键帧抽取(验收通过)
+
+### 1. 目标
+
+四路检测链路上加入规则事件(appearance/disappearance/count/zone)、事件去重状态机、事件 JSONL 与事件触发的整帧关键帧 JPEG 保存;每流事件统计并入周期 metrics。
+
+### 2. 实现文件
+
+| 文件 | 操作 | 说明 |
+|---|---|---|
+| `include/jetedge/events/event_types.h` | 新建 | EventRecord/ObservedObject/EventType |
+| `include/jetedge/events/event_engine.h` + `src/events/event_engine.cpp` | 新建 | 纯逻辑状态机(去重/grace/滞回/zone/计数) |
+| `include/jetedge/events/event_writer.h` + `src/events/event_writer.cpp` | 新建 | 事件 JSONL 写入 |
+| `include/jetedge/events/keyframe_writer.h` + `src/events/keyframe_writer.cpp` | 新建 | 整帧 JPEG 保存(官方 nvds_obj_enc) |
+| `include/jetedge/events/event_probe.h` + `src/events/event_probe.cpp` | 新建 | tracker src pad 探针:适配→引擎→写入器 |
+| `src/pipeline/pipeline.cpp` | 修改 | events 集成、探针安装/移除、EOS/Ctrl-C flush |
+| `src/common/config_loader.cpp` + `include/jetedge/common/config_loader.h` | 修改 | `events:` 配置段解析 |
+| `configs/streams_stage6.yaml` | 新建 | Stage 5 四路 + events 段 |
+| `tests/test_event_engine.cpp` | 新建 | 单元测试(ALL PASS) |
+| `CMakeLists.txt` | 修改 | 事件模块、链接 nvds_batch_jpegenc |
+
+### 3. 关键帧取帧攻关(重要)
+
+NVMM batch buffer 在 Jetson 上不能按普通像素 buffer 处理,三次迭代:
+
+1. `gst_buffer_map` 直读像素 → `map.data` 是 `NvBufSurface*`(64 B 结构体),非像素;
+2. `NvBufSurfaceMap`+`NvBufSurfaceSyncForCpu`(PITCH 可 CPU 映射,与树内 gst-dsexample 一致)+ `NvBufSurface2Raw` 兜底(BLOCK_LINEAR)→ 实测 batch 内 layout 混合,`NvBufSurface2Raw` 的 UV plane 复制失败;
+3. 官方 `nvds_obj_enc_process(isFrame=1)`(`libnvds_batch_jpegenc`,test4/image-meta-test 实机模式)→ GPU 编码任意 layout 整帧为 JPEG,`NVDS_CROP_IMAGE_META` 读回写文件。surface 定位用 `frame_meta->batch_id`(nvdsmeta.h 文档化)。
+
+### 4. 实机验收结果(全部实测)
+
+| 检查项 | 结果 |
+|---|---|
+| 4 路不同视频 | cam1 1442 / cam2 163 / cam3 288 / cam4 179,共 2072 帧,EXIT=0 |
+| 事件 JSONL | 1194 行,逐行 JSON 校验 0 失败 |
+| 事件分布 | cam1 appearance 369/disappearance 369/count_high 33/count_exit 32/zone_entry 369 |
+| 关键帧 | 150 次保存(cap)、0 错误;内容 SSIM:cam1 vs 源帧 0.985,cam2 vs office 0.976 / vs bus/car -0.028 |
+| EOS / Ctrl-C | 每流 flush + 优雅退出 EXIT=0 |
+| 内存 | RSS 619.8 → 628.0 MB 收敛 |
+| 单元测试 | ALL PASS |
+
+### 5. 修复的 bug
+
+1. 事件 JSONL `keyframe` 字段裸值无引号 → 整行非法 JSON;
+2. 事件 JSONL `zone` 字段裸值无引号 → zone_entry 行非法 JSON;
+3. NVMM buffer 像素误读(见攻关迭代 1);
+4. BLOCK_LINEAR surface 的 NvBufSurface2Raw UV plane 失败(见攻关迭代 2)。
+
+### 6. 遗留
+
+- zone 配置过大导致 zone_entry≈appearance(配置可调);
+- 关键帧同步编码+写盘在探针线程,事件风暴时可能阻塞实时线程(异步化属后续阶段);
+- 2 小时稳定性测试属于最终验收项。
+
+详细报告:`docs/stage6_events.md`。

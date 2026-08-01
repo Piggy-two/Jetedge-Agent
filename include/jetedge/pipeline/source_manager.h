@@ -52,6 +52,9 @@ class SourceManager {
   // Stream ids in mux pad_index order (index == nvstreammux sink pad index).
   std::vector<std::string> stream_ids() const;
 
+  // Decoder src pad of source `idx` (for per-stream EOS probes), or nullptr.
+  GstPad* decoder_src_pad(int idx) const;
+
   GstElement* streammux() const { return streammux_; }
 
  private:

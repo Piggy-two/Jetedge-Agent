@@ -8,7 +8,8 @@
 - Jetson 模型路径：`/home/seeed/JetEdge-Agent/models/yolo11s.onnx`。
 - **阶段 4 已完成并验收通过（2026-08-01）**：Jetson 上构建 TensorRT FP16 Engine 成功（`yolo11s_b1_384x640_fp16.engine`，21.81 MiB，SHA256 `c6cc41d0...a82274a`），自写 YOLO11 自定义 parser 接入单路 DeepStream `nvinfer`，单路 720p 视频 1440 帧检测正常（bus/car 高置信，与 ground truth 吻合），EOS / Ctrl-C / 内存行为全部验证通过。
 - **阶段 5 已完成并验收通过（2026-08-01）**：派生 batch-dynamic ONNX 并构建 batch=4 FP16 Engine（`yolo11s_b4_384x640_fp16.engine`，21.25 MiB，SHA256 `136bd5fd...b06818d`），四路视频 + nvstreammux（batch=4）+ nvinfer（batch=4）+ nvtracker 全链路跑通，输出结构化 JSONL（stream_id / track_id / class / confidence / bbox），per-stream input/inference/output FPS 与每帧检测数验证通过，EOS / Ctrl-C / 内存 / stream_id 映射 / track_id 稳定性全部实测通过。
-- 当前准备进入阶段 6：事件系统、事件去重和关键帧抽取。
+- **阶段 6 已完成并验收通过（2026-08-01）**：规则事件（appearance / disappearance / count_high / count_exit / zone_entry）+ 事件去重状态机 + 事件 JSONL（1194 行全部合法 JSON）+ 事件触发的整帧关键帧 JPEG（150 次保存、0 错误，内容与源视频 SSIM 0.985 验证）。关键帧取帧最终采用官方 `nvds_obj_enc`（GPU 编码任意 NVMM layout），此前 gst_buffer_map 直读像素与 NvBufSurfaceMap/NvBufSurface2Raw 两条路线均经实机证伪。
+- 当前准备进入阶段 7：Kimi + DeepSeek API、异步队列和降级策略。
 - GitHub 同步源码、配置模板、脚本、Markdown 和 `models/model_info.txt`；模型、视频、Engine、密钥和大日志通过 `.gitignore` 排除。
 - 模型和其他大文件通过 SCP/rsync 同步，并用 SHA256 做 Windows 与 Jetson 端到端一致性验收。
 - 大模型策略：事件驱动、按需调用、异步处理；Kimi/DeepSeek/Agent 不进入实时逐帧主链路。
@@ -20,9 +21,9 @@
 ## 当前状态快照
 
 - 当前日期：2026-08-01
-- 已完成：Jetson 环境与远程开发基础、单路本地视频硬件解码、YOLO11s ONNX 导出验证、模型传输与 SHA256 一致性验收、**阶段 4（TensorRT FP16 Engine + 单路 nvinfer 检测验证）**、**阶段 5（四路检测 + Tracker + 结构化 JSONL + per-stream Metrics）**
-- 当前阶段：**阶段 6——事件系统、事件去重和关键帧抽取**
-- 当前禁止提前开展：RTSP、Kimi、DeepSeek、Agent 工具执行、INT8、自适应调度
+- 已完成：Jetson 环境与远程开发基础、单路本地视频硬件解码、YOLO11s ONNX 导出验证、模型传输与 SHA256 一致性验收、**阶段 4（TensorRT FP16 Engine + 单路 nvinfer 检测验证）**、**阶段 5（四路检测 + Tracker + 结构化 JSONL + per-stream Metrics）**、**阶段 6（事件系统、事件去重和关键帧抽取）**
+- 当前阶段：**阶段 7——Kimi + DeepSeek 异步分析（未开始）**
+- 当前禁止提前开展：RTSP、Agent 工具执行、INT8、自适应调度（Kimi/DeepSeek 仅限异步低频分析，不进入实时主链路）
 
 当前模型信息：
 
@@ -280,35 +281,34 @@ Agent 不参与逐帧决策，也不直接操作 DeepStream 内部对象。
 - [x] 阶段 5：结构化 JSONL 输出（stream_id / track_id / class / confidence / bbox → `logs/stage5_detections.jsonl`）；
 - [x] 阶段 5：per-stream metrics——input / inference / output 三阶段 FPS + 每帧检测数 + 周期报告；
 - [x] 阶段 5：实机验收——stream_id 映射、track_id 跨帧稳定、bbox 坐标还原、EOS / Ctrl-C / 内存全部通过。
+- [x] 阶段 6：事件系统——appearance / disappearance / count_high / count_exit / zone_entry 规则事件、去重状态机（grace / 滞回）、事件 JSONL（1194 行全部合法 JSON）、事件触发的整帧关键帧 JPEG（150 次保存、0 错误，SSIM 0.985 内容验证）、每流事件统计并入 metrics、EOS/Ctrl-C flush 验证通过（`docs/stage6_events.md`）。
 
 ### 当前阶段
 
-- [ ] **阶段 6：事件系统、事件去重和关键帧抽取。**
+- [ ] **阶段 7：Kimi + DeepSeek API、异步队列和降级策略。**
 
-阶段 6 的最小目标（待展开）：
+阶段 7 的最小目标（待展开）：
 
 ```text
-规则事件定义（出现/消失/计数/区域）
+事件路由（本地规则 / 视觉不确定→Kimi / 系统指标→DeepSeek）
         ↓
-事件去重与状态管理
+异步请求队列 + 有界优先级
         ↓
-关键帧抽取与本地缓存
+HTTP 客户端复用、超时、重试、熔断
         ↓
-事件 JSONL / 事件日志
+Schema 校验与降级（API 故障不影响实时链路）
 ```
 
-阶段 6 当前不包含：
+阶段 7 当前不包含：
 
-- RTSP；
-- Kimi；
-- DeepSeek；
-- Agent；
+- Agent 工具执行；
+- RTSP 自动恢复（仍在 Stage 5+ 计划内但未批准为当前阶段）；
 - INT8；
 - 自适应调度。
 
 ### 后续阶段
 
-- [ ] 阶段 7：Kimi + DeepSeek API、异步队列和降级策略；
+- [ ] 阶段 8：Agent 白名单工具调用、验证、审计和回滚；
 - [ ] 阶段 8：Agent 白名单工具调用、验证、审计和回滚；
 - [ ] RTSP 故障恢复；
 - [ ] C++ 动态调度器；
@@ -881,6 +881,17 @@ Policy 校验候选工具，保存快照，执行低风险调整，重新 Benchm
 - [x] per-stream input / inference / output FPS 与每帧检测数（周期报告 + 汇总）；
 - [x] EOS / Ctrl-C 优雅退出；
 - [x] 无明显持续内存增长（3 次连续运行 RSS 收敛于 ~615 MB，无跨运行残留）。
+
+### 阶段 6（2026-08-01 验收通过）
+
+- [x] 规则事件四类全部触发（cam1 appearance 369 / disappearance 369 / count_high 33 / count_exit 32 / zone_entry 369）；
+- [x] 事件去重正确（appearance 去重、grace 15 帧、count 滞回、zone 去重——单元测试 ALL PASS）；
+- [x] 事件 JSONL 1194 行逐行 JSON 校验 0 失败（含 keyframe/zone 字段）；
+- [x] 关键帧 150 次保存、0 错误；内容与源视频 SSIM 0.985（cam1）、0.976（cam2 vs office）/ -0.028（cam2 vs bus/car）；
+- [x] stream_id → 关键帧映射正确（`frame_meta->batch_id` 定位 surface）；
+- [x] 每流事件统计并入 5 s 周期 metrics 报告；
+- [x] EOS 每流 flush disappearance + Ctrl-C 优雅退出 EXIT=0；
+- [x] 运行中 RSS 619.8 → 628.0 MB 收敛，无持续增长。
 
 ### 最终基础能力
 

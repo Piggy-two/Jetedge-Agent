@@ -1,13 +1,27 @@
 // Pipeline implementation — decode → nvstreammux → nvinfer → nvtracker →
-// fakesink (Stage 5).
+// fakesink (Stage 5) with rule events + keyframe extraction (Stage 6).
 
 #include "jetedge/pipeline/pipeline.h"
 
+#include <ctime>
+
 #include "jetedge/common/logging.h"
+#include "jetedge/events/event_probe.h"
 #include "jetedge/inference/metadata_probe.h"
 
 namespace jetedge {
 namespace pipeline {
+
+namespace {
+
+uint64_t now_ms() {
+  struct timespec ts;
+  clock_gettime(CLOCK_REALTIME, &ts);
+  return static_cast<uint64_t>(ts.tv_sec) * 1000ULL +
+         static_cast<uint64_t>(ts.tv_nsec / 1000000);
+}
+
+}  // namespace
 
 Pipeline::~Pipeline() {
   release_resources();
@@ -17,7 +31,8 @@ bool Pipeline::build(const std::vector<StreamConfig>& stream_configs,
                      const MuxConfig& mux_config,
                      const inference::InferenceConfig& infer_config,
                      const TrackerConfig& tracker_config,
-                     const OutputConfig& output_config) {
+                     const OutputConfig& output_config,
+                     const events::EventsConfig& events_config) {
   if (stream_configs.empty()) {
     LOG_ERROR("pipeline", "", "build", "PIPE001", "%s", "no streams configured");
     return false;
@@ -176,6 +191,61 @@ bool Pipeline::build(const std::vector<StreamConfig>& stream_configs,
     } else {
       LOG_WARN("pipeline", "failed to install output probe");
     }
+
+    // 6b. Event system (Stage 6): rule engine + JSONL + bounded keyframes.
+    if (events_config.enable) {
+      if (events_config.jsonl_path.empty()) {
+        LOG_ERROR("pipeline", "", "build", "EVT010", "%s",
+                  "events enabled but jsonl_path is empty");
+        return false;
+      }
+
+      event_engine_ = std::make_unique<events::EventEngine>(events_config,
+                                                            source_mgr_->stream_ids());
+      event_writer_ = std::make_unique<events::EventWriter>();
+      if (!event_writer_->open(events_config.jsonl_path, source_mgr_->stream_ids(),
+                               class_names)) {
+        LOG_ERROR("pipeline", "", "build", "EVT012", "%s",
+                  "event JSONL init failed");
+        return false;
+      }
+
+      if (!events_config.keyframe_dir.empty()) {
+        keyframe_writer_ = std::make_unique<events::KeyframeWriter>();
+        if (!keyframe_writer_->init(events_config.keyframe_dir,
+                                    events_config.max_keyframes,
+                                    events_config.jpeg_quality)) {
+          LOG_WARN("pipeline", "keyframe writer init failed — keyframes disabled");
+          keyframe_writer_.reset();
+        }
+      }
+
+      event_probe_id_ = events::install_event_probe(
+          out_pad, event_engine_.get(), keyframe_writer_.get(), event_writer_.get(),
+          source_mgr_->stream_ids(), class_names);
+      if (event_probe_id_ == 0) {
+        LOG_ERROR("pipeline", "", "build", "EVT013", "%s", "event probe install failed");
+        return false;
+      }
+      LOG_INFO("pipeline", "event probe installed on %s src pad",
+               GST_OBJECT_NAME(upstream));
+
+      // Per-stream EOS → flush disappearance events for the ended stream.
+      // GStreamer 1.20 has no GST_PAD_PROBE_TYPE_EOS; use downstream events
+      // and filter for EOS.
+      for (int i = 0; i < source_mgr_->source_count(); ++i) {
+        GstPad* dpad = source_mgr_->decoder_src_pad(i);
+        if (!dpad) {
+          continue;
+        }
+        const guint pid = gst_pad_add_probe(dpad, GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM,
+                                            on_stream_eos, this, nullptr);
+        if (pid != 0) {
+          eos_pads_.push_back(dpad);
+          eos_probe_ids_.push_back(pid);
+        }
+      }
+    }
   }
 
   // 7. Install bus watch.
@@ -249,6 +319,22 @@ void Pipeline::print_stats() const {
                   s.avg_output_fps);
     }
   }
+  if (event_engine_) {
+    const auto counts = event_engine_->stream_counters();
+    const auto ids = source_mgr_->stream_ids();
+    std::printf("  %-10s %12s %12s %12s %12s %12s\n",
+                "stream", "appear", "disappear", "count_high", "count_exit",
+                "zone_entry");
+    for (size_t i = 0; i < counts.size() && i < ids.size(); ++i) {
+      std::printf("  %-10s %12llu %12llu %12llu %12llu %12llu\n",
+                  ids[i].c_str(),
+                  static_cast<unsigned long long>(counts[i].appearance),
+                  static_cast<unsigned long long>(counts[i].disappearance),
+                  static_cast<unsigned long long>(counts[i].count_high),
+                  static_cast<unsigned long long>(counts[i].count_exit),
+                  static_cast<unsigned long long>(counts[i].zone_entry));
+    }
+  }
 }
 
 std::vector<metrics::MetricsRegistry::StreamSummary> Pipeline::metrics_snapshot() const {
@@ -273,6 +359,32 @@ void Pipeline::print_metrics_log() const {
              static_cast<unsigned long long>(s.total_detections),
              s.avg_detections_per_frame);
   }
+  if (event_engine_) {
+    const auto counts = event_engine_->stream_counters();
+    const auto ids = source_mgr_->stream_ids();
+    for (size_t i = 0; i < counts.size() && i < ids.size(); ++i) {
+      LOG_INFO("metrics", "events stream=%s appearance=%llu disappearance=%llu "
+               "count_high=%llu count_exit=%llu zone_entry=%llu",
+               ids[i].c_str(),
+               static_cast<unsigned long long>(counts[i].appearance),
+               static_cast<unsigned long long>(counts[i].disappearance),
+               static_cast<unsigned long long>(counts[i].count_high),
+               static_cast<unsigned long long>(counts[i].count_exit),
+               static_cast<unsigned long long>(counts[i].zone_entry));
+    }
+  }
+}
+
+// ---- Event helpers -----------------------------------------------------------
+
+void Pipeline::flush_stream_events(int stream_idx, uint64_t ts_ms) {
+  if (!event_engine_ || !event_writer_) {
+    return;
+  }
+  const auto events = event_engine_->flush_stream(stream_idx, ts_ms);
+  for (const auto& e : events) {
+    event_writer_->write(e, "");  // no keyframe at EOS/shutdown
+  }
 }
 
 // ---- Periodic timer ----------------------------------------------------------
@@ -281,6 +393,26 @@ gboolean Pipeline::on_periodic_report(gpointer user_data) {
   auto* self = static_cast<Pipeline*>(user_data);
   self->print_metrics_log();
   return G_SOURCE_CONTINUE;
+}
+
+// ---- Per-stream EOS ----------------------------------------------------------
+
+GstPadProbeReturn Pipeline::on_stream_eos(GstPad* pad, GstPadProbeInfo* info,
+                                          gpointer user_data) {
+  auto* self = static_cast<Pipeline*>(user_data);
+  GstEvent* event = GST_PAD_PROBE_INFO_EVENT(info);
+  if (!event || GST_EVENT_TYPE(event) != GST_EVENT_EOS) {
+    return GST_PAD_PROBE_OK;  // only handle downstream EOS
+  }
+  for (size_t i = 0; i < self->eos_pads_.size(); ++i) {
+    if (self->eos_pads_[i] == pad) {
+      LOG_INFO("pipeline", "EOS for source %d — flushing disappearance events",
+               static_cast<int>(i));
+      self->flush_stream_events(static_cast<int>(i), now_ms());
+      break;
+    }
+  }
+  return GST_PAD_PROBE_OK;
 }
 
 // ---- GStreamer callbacks ----------------------------------------------------
@@ -350,6 +482,27 @@ void Pipeline::release_resources() {
     gst_pad_remove_probe(pad, output_probe_id_);
     output_probe_id_ = 0;
   }
+  if (event_probe_id_ != 0 && (tracker_src_pad_ || nvinfer_src_pad_)) {
+    GstPad* pad = tracker_src_pad_ ? tracker_src_pad_ : nvinfer_src_pad_;
+    gst_pad_remove_probe(pad, event_probe_id_);
+    event_probe_id_ = 0;
+  }
+  for (size_t i = 0; i < eos_pads_.size() && i < eos_probe_ids_.size(); ++i) {
+    if (eos_probe_ids_[i] != 0) {
+      gst_pad_remove_probe(eos_pads_[i], eos_probe_ids_[i]);
+    }
+  }
+  eos_pads_.clear();
+  eos_probe_ids_.clear();
+
+  // Flush remaining disappearance events (Ctrl-C mid-run).
+  if (source_mgr_ && event_engine_ && event_writer_) {
+    const uint64_t ts = now_ms();
+    for (int i = 0; i < source_mgr_->source_count(); ++i) {
+      flush_stream_events(i, ts);
+    }
+    event_writer_->flush();
+  }
   if (infer_probe_id_ != 0 && nvinfer_src_pad_) {
     gst_pad_remove_probe(nvinfer_src_pad_, infer_probe_id_);
     infer_probe_id_ = 0;
@@ -380,6 +533,9 @@ void Pipeline::release_resources() {
   tracker_ = nullptr;
   source_mgr_.reset();
   metrics_.reset();
+  keyframe_writer_.reset();
+  event_writer_.reset();
+  event_engine_.reset();
 
   if (loop_) {
     g_main_loop_unref(loop_);

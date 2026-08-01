@@ -7,6 +7,7 @@
 #include <string>
 #include <vector>
 
+#include "jetedge/events/event_types.h"
 #include "jetedge/inference/inference_config.h"
 #include "jetedge/pipeline/stream_config.h"
 
@@ -18,6 +19,7 @@ struct StreamsConfig {
   inference::InferenceConfig inference;
   pipeline::TrackerConfig tracker;
   pipeline::OutputConfig output;
+  events::EventsConfig events;
   std::vector<pipeline::StreamConfig> streams;
 };
 

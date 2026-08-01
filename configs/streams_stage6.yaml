@@ -1,0 +1,68 @@
+# JetEdge-Agent Stage 6 configuration — four-stream detection + tracker +
+# structured JSONL output + per-stream metrics + event system.
+#
+# Same four streams as Stage 5; the events section adds rule events
+# (appearance / disappearance / count / zone), dedup state, and bounded
+# keyframe extraction to the local cache.
+#
+# Zone coordinates are in nvstreammux output space (1280x720).  The "road"
+# zone covers the mid/lower part of the cam1 bus/car scene.
+
+mux:
+  output_width: 1280
+  output_height: 720
+  batch_timeout_usec: 40000   # 40ms timeout for batch formation
+
+inference:
+  enable: true
+  config_file_path: configs/nvinfer_yolo11s_b4_fp16.txt
+  gie_unique_id: 1
+
+tracker:
+  enable: true
+  ll_lib_file: /opt/nvidia/deepstream/deepstream-7.1/lib/libnvds_nvmultiobjecttracker.so
+  ll_config_file: /opt/nvidia/deepstream/deepstream-7.1/samples/configs/deepstream-app/config_tracker_NvDCF_perf.yml
+  width: 960
+  height: 544
+  gpu_id: 0
+
+output:
+  jsonl_path: /home/seeed/projects/jetedge-agent/logs/stage6_detections.jsonl
+  labels_file_path: /home/seeed/projects/jetedge-agent/configs/coco_labels.txt
+  fps_report_interval_sec: 5
+
+events:
+  enable: true
+  jsonl_path: /home/seeed/projects/jetedge-agent/logs/stage6_events.jsonl
+  keyframe_dir: /home/seeed/projects/jetedge-agent/logs/keyframes
+  max_keyframes: 150          # global cap on saved keyframes
+  jpeg_quality: 85
+  disappear_grace_frames: 15  # frames unseen before a disappearance event
+  count_threshold: 3          # count_high when active count >= this
+  count_hysteresis: 1         # re-arm when count <= threshold - this
+  classes: [0, 1, 2, 3, 5, 7] # person, bicycle, car, motorcycle, bus, truck
+  zones:
+    - name: road
+      stream_id: cam1
+      rect: [0, 250, 1280, 470]
+
+streams:
+  - id: cam1
+    type: file
+    uri: /opt/nvidia/deepstream/deepstream-7.1/samples/streams/sample_720p.h264
+    priority: high
+
+  - id: cam2
+    type: file
+    uri: /opt/nvidia/deepstream/deepstream-7.1/samples/streams/sample_office.mp4
+    priority: normal
+
+  - id: cam3
+    type: file
+    uri: /opt/nvidia/deepstream/deepstream-7.1/samples/streams/sample_walk.mov
+    priority: normal
+
+  - id: cam4
+    type: file
+    uri: /opt/nvidia/deepstream/deepstream-7.1/samples/streams/sample_ride_bike.mov
+    priority: low

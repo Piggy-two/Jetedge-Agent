@@ -25,6 +25,10 @@ set(CUDA_INCLUDE /usr/local/cuda/include)
 set(JETEDGE_SOURCES
   apps/jetedge_server/main.cpp
   src/common/config_loader.cpp
+  src/events/event_engine.cpp
+  src/events/event_probe.cpp
+  src/events/event_writer.cpp
+  src/events/keyframe_writer.cpp
   src/inference/metadata_probe.cpp
   src/metrics/metrics_registry.cpp
   src/pipeline/pipeline.cpp
@@ -36,6 +40,11 @@ set(JETEDGE_SOURCES
 set(JETEDGE_HEADERS
   include/jetedge/common/logging.h
   include/jetedge/common/config_loader.h
+  include/jetedge/events/event_engine.h
+  include/jetedge/events/event_probe.h
+  include/jetedge/events/event_types.h
+  include/jetedge/events/event_writer.h
+  include/jetedge/events/keyframe_writer.h
   include/jetedge/inference/inference_config.h
   include/jetedge/inference/metadata_probe.h
   include/jetedge/metrics/metrics_registry.h
@@ -68,7 +77,19 @@ target_link_libraries(jetedge_server PRIVATE
   PkgConfig::GSTREAMER
   PkgConfig::GLIB
   PkgConfig::YAMLCPP
+  jpeg
+  nvds_batch_jpegenc
   nvdsgst_meta
   nvds_meta
 )
 target_link_directories(jetedge_server PRIVATE ${DEEPSTREAM_LIB})
+
+# ---- Unit tests -------------------------------------------------------------
+find_package(Threads REQUIRED)
+
+add_executable(test_event_engine tests/test_event_engine.cpp src/events/event_engine.cpp)
+target_include_directories(test_event_engine PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(test_event_engine PRIVATE Threads::Threads)
+
+enable_testing()
+add_test(NAME event_engine COMMAND test_event_engine)

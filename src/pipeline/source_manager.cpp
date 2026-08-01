@@ -105,6 +105,13 @@ std::vector<std::string> SourceManager::stream_ids() const {
   return ids;
 }
 
+GstPad* SourceManager::decoder_src_pad(int idx) const {
+  if (idx < 0 || idx >= static_cast<int>(sources_.size())) {
+    return nullptr;
+  }
+  return sources_[static_cast<size_t>(idx)]->decoder_src_pad();
+}
+
 void SourceManager::print_stats() const {
   uint64_t total = 0;
   for (const auto& src : sources_) {

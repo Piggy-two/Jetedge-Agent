@@ -9,7 +9,9 @@ Before any work, read these files in order:
 3. `docs/PROGRESS.md`
 4. `models/model_info.txt`
 
-Current scope is Stage 5 only: four-stream detection (batch=4), nvtracker integration, structured JSONL output, and a minimal per-stream metrics registry.
+Current scope is Stage 7 only: Kimi + DeepSeek async analysis clients, bounded async queues, HTTP reuse, timeout/retry/circuit-breaking, and schema-validated degradation (API failure must never stop the video pipeline).
+
+Stage 6 (event engine, dedup, keyframes) is complete and accepted (2026-08-01); see `docs/stage6_events.md`.
 
 Hard constraints:
 
@@ -20,8 +22,8 @@ Hard constraints:
 - Before every `git pull`, run `git status` and inspect uncommitted changes.
 - Do not overwrite uncommitted changes.
 - Do not force push.
-- Do not generate large Stage 6 to Stage 8 code early.
-- Do not add RTSP, event engine, Kimi, DeepSeek, Agent, or INT8 work while Stage 5 is still pending.
+- Do not generate large Stage 7 to Stage 9 code early.
+- Do not add RTSP, Agent, INT8, adaptive-scheduler, or event-engine extensions while Stage 7 is still pending.
 
 Read this file before planning, syncing, editing, building, running, or debugging anything in this repository.
 `README.md` contains the current stage snapshot and the cross-device workflow. Detailed plans and measured reports live under `docs/`.
@@ -72,6 +74,8 @@ Transfer to Jetson: complete
 Windows/Jetson SHA256 comparison: PASSED
 TensorRT FP16 engine build: complete (21.81 MiB, SHA256 c6cc41d0...a82274a)
 Single-stream nvinfer detection: complete (1440 frames, bus/car conf>0.9, EOS/Ctrl-C/memory verified)
+Four-stream detection + nvtracker + JSONL + metrics: complete (batch=4, 2072 frames, EOS/Ctrl-C/memory verified)
+Event engine + dedup + keyframe extraction: complete (1194 valid JSONL events, 150 keyframes, SSIM 0.985 content check)
 ```
 
 Current model artifact:
@@ -90,26 +94,25 @@ Metadata path: /home/seeed/JetEdge-Agent/models/model_info.txt
 The only approved implementation stage now is:
 
 ```text
-Stage 5:
-1. Four local video sources → nvstreammux (batch=4) → nvinfer (batch=4).
-2. Integrate nvtracker and validate track IDs across frames.
-3. Structured JSONL output: stream_id, track_id, class, confidence, bbox.
-4. Minimal per-stream metrics: input/inference/output FPS, per-frame detection counts.
-5. Validate stream_id mapping, EOS, Ctrl-C, and memory behavior on the Jetson.
+Stage 7:
+1. Event routing: local rules stay local; ambiguous visual events → Kimi; system metrics/logs → DeepSeek.
+2. Bounded async request queues with priority and overload shedding.
+3. Reused HTTP client/connection/TLS; timeout, limited retry, backoff, circuit breaker.
+4. Fixed prompts + schemas; dynamic data placed later; bounded output tokens.
+5. API failure must never terminate or block the real-time pipeline; emit local events immediately, mark cloud analysis pending.
 ```
 
 Out of scope for the current stage:
 
 - RTSP;
-- event engine;
-- Kimi or DeepSeek clients;
-- Agent code;
+- Agent tool execution;
 - INT8;
 - adaptive scheduling;
 - custom CUDA post-processing;
+- event-engine extensions (keyframe async write, ROI crops);
 - broad refactoring.
 
-Do not mark Stage 5 complete until the acceptance checks run on the Jetson.
+Do not mark Stage 7 complete until the acceptance checks run on the Jetson.
 
 ---
 
