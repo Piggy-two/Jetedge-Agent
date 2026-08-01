@@ -1,0 +1,26 @@
+YOLO11s ONNX Model Information
+==================================================
+
+Model: YOLO11s
+Source: Ultralytics pretrained model
+Input size: 1x3x384x640
+Batch: 1
+ONNX opset: 12
+Dynamic shape: false
+Simplify: true
+
+Python: 3.11.9
+ONNX: 1.22.0
+ONNX Runtime: 1.28.0
+
+Input nodes:
+- name=images, shape=[1, 3, 384, 640], dtype=tensor(float)
+
+Output nodes:
+- name=output0, shape=[1, 84, 5040], dtype=tensor(float)
+
+Model size: 36.19 MB
+SHA256: 41abd2ff906712b41c60de9b7d5d5f09918e23a331d80cc0926071600fd3e078
+ONNX Checker: PASSED
+ONNX Runtime inference: PASSED
+NaN/Inf check: PASSED
