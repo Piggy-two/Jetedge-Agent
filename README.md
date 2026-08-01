@@ -9,7 +9,7 @@
 - **阶段 4 已完成并验收通过（2026-08-01）**：Jetson 上构建 TensorRT FP16 Engine 成功（`yolo11s_b1_384x640_fp16.engine`，21.81 MiB，SHA256 `c6cc41d0...a82274a`），自写 YOLO11 自定义 parser 接入单路 DeepStream `nvinfer`，单路 720p 视频 1440 帧检测正常（bus/car 高置信，与 ground truth 吻合），EOS / Ctrl-C / 内存行为全部验证通过。
 - **阶段 5 已完成并验收通过（2026-08-01）**：派生 batch-dynamic ONNX 并构建 batch=4 FP16 Engine（`yolo11s_b4_384x640_fp16.engine`，21.25 MiB，SHA256 `136bd5fd...b06818d`），四路视频 + nvstreammux（batch=4）+ nvinfer（batch=4）+ nvtracker 全链路跑通，输出结构化 JSONL（stream_id / track_id / class / confidence / bbox），per-stream input/inference/output FPS 与每帧检测数验证通过，EOS / Ctrl-C / 内存 / stream_id 映射 / track_id 稳定性全部实测通过。
 - **阶段 6 已完成并验收通过（2026-08-01）**：规则事件（appearance / disappearance / count_high / count_exit / zone_entry）+ 事件去重状态机 + 事件 JSONL（1194 行全部合法 JSON）+ 事件触发的整帧关键帧 JPEG（150 次保存、0 错误，内容与源视频 SSIM 0.985 验证）。关键帧取帧最终采用官方 `nvds_obj_enc`（GPU 编码任意 NVMM layout），此前 gst_buffer_map 直读像素与 NvBufSurfaceMap/NvBufSurface2Raw 两条路线均经实机证伪。
-- 当前准备进入阶段 7：Qwen + DeepSeek API、异步队列和降级策略。
+- **阶段 7 已完成并验收通过（2026-08-01）**：事件路由（本地规则本地化 / zone_entry→Qwen 视觉复核 / 周期指标→DeepSeek 诊断）+ 有界异步优先级队列（过载按优先级丢弃）+ 复用的 libcurl HTTP 客户端（超时/有限重试/指数退避/熔断 5/30/2）+ 固定提示词与 jsoncpp 字段级 schema 校验 + **API 故障绝不影响实时管道**。三层验收全部实测通过：单元测试（含熔断器 6 组与 schema 解析 20 项）、本地 mock 端点全链路（qwen 369 + deepseek 6，375 行 analysis JSONL 校验 0 失败，管道 FPS 无影响）、死端点故障注入（熔断 OPEN 后 288 请求跳过）、线上真实 API（qwen3.6-flash 与 deepseek-v4-flash 真实请求成功，首轮暴露的 qwen markdown 围栏解析缺陷经根因确认后修复）。
 - GitHub 同步源码、配置模板、脚本、Markdown 和 `models/model_info.txt`；模型、视频、Engine、密钥和大日志通过 `.gitignore` 排除。
 - 模型和其他大文件通过 SCP/rsync 同步，并用 SHA256 做 Windows 与 Jetson 端到端一致性验收。
 - 大模型策略：事件驱动、按需调用、异步处理；Qwen/DeepSeek/Agent 不进入实时逐帧主链路。
@@ -21,9 +21,9 @@
 ## 当前状态快照
 
 - 当前日期：2026-08-01
-- 已完成：Jetson 环境与远程开发基础、单路本地视频硬件解码、YOLO11s ONNX 导出验证、模型传输与 SHA256 一致性验收、**阶段 4（TensorRT FP16 Engine + 单路 nvinfer 检测验证）**、**阶段 5（四路检测 + Tracker + 结构化 JSONL + per-stream Metrics）**、**阶段 6（事件系统、事件去重和关键帧抽取）**
-- 当前阶段：**阶段 7——Qwen + DeepSeek 异步分析（未开始）**
-- 当前禁止提前开展：RTSP、Agent 工具执行、INT8、自适应调度（Qwen/DeepSeek 仅限异步低频分析，不进入实时主链路）
+- 已完成：Jetson 环境与远程开发基础、单路本地视频硬件解码、YOLO11s ONNX 导出验证、模型传输与 SHA256 一致性验收、**阶段 4（TensorRT FP16 Engine + 单路 nvinfer 检测验证）**、**阶段 5（四路检测 + Tracker + 结构化 JSONL + per-stream Metrics）**、**阶段 6（事件系统、事件去重和关键帧抽取）**、**阶段 7（Qwen + DeepSeek 异步分析）**
+- 当前阶段：**阶段 8 准备——RTSP 故障恢复与动态调度（未开始）**
+- 当前禁止提前开展：Agent 工具执行、INT8、自适应调度实现（Qwen/DeepSeek 仅限异步低频分析，不进入实时主链路）
 
 当前模型信息：
 
@@ -282,37 +282,25 @@ Agent 不参与逐帧决策，也不直接操作 DeepStream 内部对象。
 - [x] 阶段 5：per-stream metrics——input / inference / output 三阶段 FPS + 每帧检测数 + 周期报告；
 - [x] 阶段 5：实机验收——stream_id 映射、track_id 跨帧稳定、bbox 坐标还原、EOS / Ctrl-C / 内存全部通过。
 - [x] 阶段 6：事件系统——appearance / disappearance / count_high / count_exit / zone_entry 规则事件、去重状态机（grace / 滞回）、事件 JSONL（1194 行全部合法 JSON）、事件触发的整帧关键帧 JPEG（150 次保存、0 错误，SSIM 0.985 内容验证）、每流事件统计并入 metrics、EOS/Ctrl-C flush 验证通过（`docs/stage6_events.md`）。
+- [x] 阶段 7：Qwen + DeepSeek 异步分析——事件路由（本地 / zone_entry→Qwen / 周期指标→DeepSeek）、有界异步优先级队列（满时按优先级丢弃）、libcurl 复用（超时/重试/退避/熔断 5/30/2）、固定提示词 + jsoncpp 字段级 schema 校验（含 markdown 围栏剥离）、云端分析 JSONL。验收：单元测试全过（熔断 6 组 / schema 20 项）、mock 端点全链路（375 行校验 0 失败，FPS 无影响）、死端点故障注入（熔断 OPEN、288 请求跳过、管道不受影响）、线上真实 API（qwen3.6-flash 与 deepseek-v4-flash 真实请求成功；`docs/stage7_llm.md`）。
 
 ### 当前阶段
 
-- [ ] **阶段 7：Qwen + DeepSeek API、异步队列和降级策略。**
+- [ ] **阶段 8 准备：RTSP 故障恢复与动态调度（未开始，见 `docs/` 后续规划）。**
 
-阶段 7 的最小目标（待展开）：
-
-```text
-事件路由（本地规则 / 视觉不确定→Qwen / 系统指标→DeepSeek）
-        ↓
-异步请求队列 + 有界优先级
-        ↓
-HTTP 客户端复用、超时、重试、熔断
-        ↓
-Schema 校验与降级（API 故障不影响实时链路）
-```
-
-阶段 7 当前不包含：
+已批准但不属于当前阶段：
 
 - Agent 工具执行；
-- RTSP 自动恢复（仍在 Stage 5+ 计划内但未批准为当前阶段）；
 - INT8；
-- 自适应调度。
+- 事件引擎扩展（关键帧异步写、ROI 裁剪）；
+- 大模型调用进入实时主链路。
 
 ### 后续阶段
 
-- [ ] 阶段 8：Agent 白名单工具调用、验证、审计和回滚；
-- [ ] 阶段 8：Agent 白名单工具调用、验证、审计和回滚；
-- [ ] RTSP 故障恢复；
-- [ ] C++ 动态调度器；
+- [ ] RTSP 故障恢复（OFFLINE → CONNECTING → RUNNING → DEGRADED → RECONNECTING → FAILED）；
+- [ ] 确定性 C++ 动态调度器（NORMAL | PRESSURE | THERMAL | CRITICAL | RECOVERY）；
 - [ ] ftrace 和 CPU Affinity 分析；
+- [ ] Agent 白名单工具调用、验证、审计和回滚；
 - [ ] INT8 PTQ 与精度回归；
 - [ ] 稳定性测试、Demo 和项目包装。
 
@@ -892,6 +880,20 @@ Policy 校验候选工具，保存快照，执行低风险调整，重新 Benchm
 - [x] 每流事件统计并入 5 s 周期 metrics 报告；
 - [x] EOS 每流 flush disappearance + Ctrl-C 优雅退出 EXIT=0；
 - [x] 运行中 RSS 619.8 → 628.0 MB 收敛，无持续增长。
+
+### 阶段 7（2026-08-01 验收通过）
+
+- [x] 事件路由：规则可确认事件留本地；zone_entry→Qwen（HIGH）；周期系统指标→DeepSeek（LOW）；count_exit 永不路由；
+- [x] 有界异步优先级队列：`max_size=32`（live 测试 8），满时按最低优先级 + 最旧丢弃，探针线程零阻塞；
+- [x] libcurl 连接复用（MAXCONNECTS=4）+ TLS 校验 + 超时 + 仅瞬态错误重试（500 ms 指数退避）+ 熔断（5/30/2）；
+- [x] 熔断状态机 6 组单元测试 ALL PASS；故障注入实测：死端点 curl rc=7 → 5 次失败 OPEN → 288 请求跳过；
+- [x] 固定提示词 + jsoncpp 字段级 schema 校验（20 项单元测试 ALL PASS，含 markdown 围栏剥离——线上实测 qwen 返回 ```json 围栏）；
+- [x] mock 端点全链路：qwen 369 + deepseek 6 请求，375 行 analysis JSONL 逐行校验 0 失败，管道 FPS 无影响（44.09 vs 44.07）；
+- [x] 线上真实 API：qwen3.6-flash 真实请求成功（http 200、schema 校验通过、记录可直接解析）；deepseek-v4-flash 真实调用通过；0 条解析失败/熔断日志；
+- [x] llm 禁用回归与 Stage 6 完全一致（1194 事件 / 2072 帧 / EXIT=0 / 0 条 llm 日志）；
+- [x] API 故障不影响实时链路：live 首轮 qwen 全部失败并熔断时，管道 2072 帧 EXIT=0；
+- [x] 密钥安全：env → secrets.env 运行时解析，日志仅 LLM010 错误码，无 key / 无完整 Base64 泄漏；
+- [x] 相关文档同步（`docs/stage7_llm.md` / `docs/PROGRESS.md` / `docs/development_log.md`）。
 
 ### 最终基础能力
 

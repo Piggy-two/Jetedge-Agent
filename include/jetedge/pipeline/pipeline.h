@@ -17,6 +17,8 @@
 #include "jetedge/events/event_writer.h"
 #include "jetedge/events/keyframe_writer.h"
 #include "jetedge/inference/inference_config.h"
+#include "jetedge/llm/llm_config.h"
+#include "jetedge/llm/llm_router.h"
 #include "jetedge/metrics/metrics_registry.h"
 #include "jetedge/pipeline/source_manager.h"
 #include "jetedge/pipeline/stream_config.h"
@@ -43,12 +45,14 @@ class Pipeline {
   // tracker_config: nvtracker settings (enable=false links nvinfer directly).
   // output_config: JSONL output + labels file settings.
   // events_config: rule events + keyframe extraction (Stage 6).
+  // llm_config: async cloud analysis routing (Stage 7).
   bool build(const std::vector<StreamConfig>& stream_configs,
              const MuxConfig& mux_config,
              const inference::InferenceConfig& infer_config = {},
              const TrackerConfig& tracker_config = {},
              const OutputConfig& output_config = {},
-             const events::EventsConfig& events_config = {});
+             const events::EventsConfig& events_config = {},
+             const llm::LlmConfig& llm_config = {});
 
   // Run the GLib main loop (blocking).  Exits on EOS, error, or signal.
   void run();
@@ -65,9 +69,11 @@ class Pipeline {
  private:
   static gboolean on_bus_message(GstBus* bus, GstMessage* msg, gpointer user_data);
   static gboolean on_periodic_report(gpointer user_data);
+  static gboolean on_llm_metrics_report(gpointer user_data);
   static GstPadProbeReturn on_stream_eos(GstPad* pad, GstPadProbeInfo* info,
                                          gpointer user_data);
   void print_metrics_log() const;
+  std::string build_metrics_json() const;
   void flush_stream_events(int stream_idx, uint64_t ts_ms);
   void release_resources();
 
@@ -83,6 +89,7 @@ class Pipeline {
   guint output_probe_id_ = 0;  // on tracker (or nvinfer) src pad
   guint event_probe_id_ = 0;   // on tracker (or nvinfer) src pad (Stage 6)
   guint report_timer_id_ = 0;  // periodic metrics report
+  guint llm_metrics_timer_id_ = 0;  // periodic DeepSeek analysis (Stage 7)
   GMainLoop* loop_ = nullptr;
   guint bus_watch_id_ = 0;
 
@@ -95,6 +102,8 @@ class Pipeline {
   std::unique_ptr<events::EventEngine> event_engine_;
   std::unique_ptr<events::EventWriter> event_writer_;
   std::unique_ptr<events::KeyframeWriter> keyframe_writer_;
+  std::unique_ptr<llm::LlmRouter> llm_router_;  // Stage 7 async cloud analysis
+  std::vector<std::string> class_names_;        // for LLM prompt building
 };
 
 }  // namespace pipeline

@@ -9,6 +9,7 @@
 
 #include "jetedge/events/event_types.h"
 #include "jetedge/inference/inference_config.h"
+#include "jetedge/llm/llm_config.h"
 #include "jetedge/pipeline/stream_config.h"
 
 namespace jetedge {
@@ -20,6 +21,7 @@ struct StreamsConfig {
   pipeline::TrackerConfig tracker;
   pipeline::OutputConfig output;
   events::EventsConfig events;
+  llm::LlmConfig llm;                 // Stage 7: async cloud analysis
   std::vector<pipeline::StreamConfig> streams;
 };
 

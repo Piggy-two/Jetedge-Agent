@@ -16,6 +16,7 @@
 
 #include "jetedge/common/config_loader.h"
 #include "jetedge/common/logging.h"
+#include "jetedge/common/secrets.h"
 #include "jetedge/pipeline/pipeline.h"
 
 namespace {
@@ -64,6 +65,10 @@ int main(int argc, char* argv[]) {
     return EXIT_FAILURE;
   }
 
+  // ---- Load secrets (env vars or ~/.jetedge/secrets.env) -------------------
+  // API keys are never logged; a missing key only disables that provider.
+  jetedge::common::load_secrets_file();
+
   // ---- Initialize GStreamer -----------------------------------------------
   if (!gst_init_check(&argc, &argv, nullptr)) {
     std::fprintf(stderr, "error | main | gst_init_check failed\n");
@@ -86,7 +91,8 @@ int main(int argc, char* argv[]) {
   g_pipeline = &pipeline;
 
   if (!pipeline.build(config.streams, config.mux, config.inference,
-                      config.tracker, config.output, config.events)) {
+                      config.tracker, config.output, config.events,
+                      config.llm)) {
     LOG_ERROR("main", "", "init", "BUILD010", "%s", "pipeline build failed");
     gst_deinit();
     return EXIT_FAILURE;

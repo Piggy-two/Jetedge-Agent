@@ -1,0 +1,103 @@
+# JetEdge-Agent Stage 7 configuration — four-stream detection + tracker +
+# structured JSONL output + per-stream metrics + event system + async
+# cloud analysis (Qwen visual review / DeepSeek metrics diagnosis).
+#
+# The `llm:` section is DISABLED by default: enable it only with valid API
+# keys in ~/.jetedge/secrets.env (QWEN_API_KEY / DEEPSEEK_API_KEY).
+# Cloud analysis is best-effort — API failure never stops the pipeline.
+
+mux:
+  output_width: 1280
+  output_height: 720
+  batch_timeout_usec: 40000   # 40ms timeout for batch formation
+
+inference:
+  enable: true
+  config_file_path: configs/nvinfer_yolo11s_b4_fp16.txt
+  gie_unique_id: 1
+
+tracker:
+  enable: true
+  ll_lib_file: /opt/nvidia/deepstream/deepstream-7.1/lib/libnvds_nvmultiobjecttracker.so
+  ll_config_file: /opt/nvidia/deepstream/deepstream-7.1/samples/configs/deepstream-app/config_tracker_NvDCF_perf.yml
+  width: 960
+  height: 544
+  gpu_id: 0
+
+output:
+  jsonl_path: /home/seeed/projects/jetedge-agent/logs/stage7_detections.jsonl
+  labels_file_path: /home/seeed/projects/jetedge-agent/configs/coco_labels.txt
+  fps_report_interval_sec: 5
+
+events:
+  enable: true
+  jsonl_path: /home/seeed/projects/jetedge-agent/logs/stage7_events.jsonl
+  keyframe_dir: /home/seeed/projects/jetedge-agent/logs/keyframes
+  max_keyframes: 150          # global cap on saved keyframes
+  jpeg_quality: 85
+  disappear_grace_frames: 15  # frames unseen before a disappearance event
+  count_threshold: 3          # count_high when active count >= this
+  count_hysteresis: 1         # re-arm when count <= threshold - this
+  classes: [0, 1, 2, 3, 5, 7] # person, bicycle, car, motorcycle, bus, truck
+  zones:
+    - name: road
+      stream_id: cam1
+      rect: [0, 250, 1280, 470]
+
+llm:
+  enable: false               # master switch — enable only with valid API keys
+  keyframe_dir: /home/seeed/projects/jetedge-agent/logs/keyframes
+  cloud_output_path: /home/seeed/projects/jetedge-agent/logs/stage7_analysis.jsonl
+  deepseek_interval_sec: 60   # periodic system metrics analysis
+
+  qwen:
+    endpoint: "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
+    model: "qwen3.6-flash"
+    max_tokens: 512
+    timeout_sec: 30
+    max_retries: 2
+    thinking_mode: false      # keep off for simple confirmations
+
+  deepseek:
+    endpoint: "https://api.deepseek.com/v1/chat/completions"
+    model: "deepseek-v4-flash"
+    max_tokens: 512
+    timeout_sec: 30
+    max_retries: 2
+    thinking_mode: false
+
+  queue:
+    max_size: 32              # bounded; shed lowest-priority items when full
+    worker_threads: 1
+
+  circuit_breaker:
+    failure_threshold: 5
+    reset_timeout_sec: 30
+    half_open_success_threshold: 2
+
+  routing:
+    appearance_to_qwen: false     # rule-confirmed events stay local
+    disappearance_to_qwen: false
+    zone_entry_to_qwen: true      # safety-relevant, always visually reviewed
+    count_high_to_qwen: false
+
+streams:
+  - id: cam1
+    type: file
+    uri: /opt/nvidia/deepstream/deepstream-7.1/samples/streams/sample_720p.h264
+    priority: high
+
+  - id: cam2
+    type: file
+    uri: /opt/nvidia/deepstream/deepstream-7.1/samples/streams/sample_office.mp4
+    priority: normal
+
+  - id: cam3
+    type: file
+    uri: /opt/nvidia/deepstream/deepstream-7.1/samples/streams/sample_walk.mov
+    priority: normal
+
+  - id: cam4
+    type: file
+    uri: /opt/nvidia/deepstream/deepstream-7.1/samples/streams/sample_ride_bike.mov
+    priority: low

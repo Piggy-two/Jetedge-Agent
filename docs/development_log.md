@@ -460,3 +460,62 @@ Stage 7 原定使用 **Kimi + DeepSeek** 双 Provider，现调整为 **Qwen (通
 - `llm_queue.h/cpp` — 有界优先级异步请求队列
 - `llm_client.h/cpp` — libcurl HTTP 客户端(Qwen + DeepSeek, 超时/重试/熔断)
 - `llm_router.h/cpp` — 事件类型 → Provider 路由
+
+---
+
+## 2026-08-01 Stage 7：Qwen + DeepSeek 异步分析（验收通过）
+
+### 1. 目标
+
+事件路由（本地规则本地化；zone_entry 视觉歧义 → Qwen；周期系统指标 → DeepSeek）+ 有界异步优先级队列 + 复用的 libcurl HTTP 客户端（超时/有限重试/指数退避/熔断）+ 固定提示词与 schema 校验 + **API 故障绝不影响实时管道**。
+
+### 2. 实现文件
+
+| 文件 | 操作 | 说明 |
+|---|---|---|
+| `include/jetedge/llm/llm_types.h` | 新建 | LlmProvider / RequestPriority / LlmRequest / LlmResponse / CloudAnalysisRecord |
+| `include/jetedge/llm/llm_config.h` | 新建 | LlmConfig（端点、队列、熔断、路由表） |
+| `include/jetedge/llm/request_queue.h` | 新建 | BoundedPriorityQueue 模板：优先级（低枚举值先出）+ FIFO 决胜；满时弹出最低优先级；shutdown 唤醒 |
+| `include/jetedge/llm/circuit_breaker.h` + `src/llm/circuit_breaker.cpp` | 新建 | CLOSED → OPEN（5 次连续失败）→ HALF_OPEN（30 s 恢复超时）→ CLOSED（2 次成功）或 re-OPEN，每 provider 一个实例 |
+| `include/jetedge/llm/http_client.h` + `src/llm/http_client.cpp` | 新建 | libcurl easy API：连接复用（MAXCONNECTS=4）、TLS 校验、Bearer 认证、仅瞬态错误重试（连接失败/5xx，4xx 不重试）、500 ms 起步指数退避 |
+| `include/jetedge/llm/prompt_manager.h` + `src/llm/prompt_manager.cpp` | 新建 | Qwen 视觉复核 / DeepSeek 指标诊断固定提示词；OpenAI-compatible 请求体（Qwen 用 base64 data URL 图像）；响应 content 抽取 + jsoncpp 字段级校验 |
+| `include/jetedge/llm/llm_router.h` + `src/llm/llm_router.cpp` | 新建 | 路由决策 + worker 线程（100 ms 轮询）+ 熔断集成 + 云分析 JSONL 写出 + 统计 |
+| `src/events/event_probe.cpp` | 修改 | 本地事件先写 JSONL，再非阻塞 enqueue |
+| `src/pipeline/pipeline.cpp` | 修改 | LlmRouter 初始化、DeepSeek 周期指标定时器（g_timeout_add_seconds）、shutdown 顺序 |
+| `src/common/config_loader.cpp` | 修改 | `llm:` YAML 段解析与范围校验 |
+| `apps/jetedge_server/main.cpp` | 修改 | 启动时 `load_secrets_file()`（env 优先，`~/.jetedge/secrets.env` 兜底） |
+| `configs/streams_stage7.yaml` | 新建 | llm 默认禁用；真实端点（dashscope.aliyuncs.com / api.deepseek.com）；模型 qwen3.6-flash / deepseek-v4-flash；队列 32；熔断 5/30/2；路由仅开 zone_entry→Qwen |
+| `tests/test_circuit_breaker.cpp` | 新建 | 6 组熔断状态机用例 |
+| `tests/test_prompt_manager.cpp` | 新建 | schema 解析单元测试（含 markdown 围栏剥离，20 项断言） |
+| `CMakeLists.txt` | 修改 | 链接 jsoncpp（pkg-config）+ libcurl；test_circuit_breaker / test_prompt_manager 目标 + ctest |
+
+线上验收修复：qwen 系列模型（qwen-vl-plus / qwen3.6-flash）把请求的 JSON 包在 ```json markdown 围栏里返回，jsoncpp 直接解析失败 → 新增 `strip_markdown_fence()`（prompt_manager）在 `validate_review_json` 解析前剥离围栏；`llm_router` 将 `result_json` 存为剥离后的规范化内容（analysis JSONL 记录可直接解析）。模型默认值随用户决策切换：qwen `qwen-vl-plus`→`qwen3.6-flash`、deepseek `deepseek-chat`→`deepseek-v4-flash`（均已在各自 API 模型列表确认存在）。
+
+调试中修复：CURL* 为 void* 导致前向声明冲突（改 `void* curl_`）；lock_guard 无 unlock（改 unique_lock）；`<thread>` include 缺失；post_raw content_type 硬编码；PromptManager 硬编码 model 名（改 config 注入）；enqueue 后移动对象读取（先拷贝局部变量）；熔断 OPEN 日志显示 0 次失败（先捕获 reached）。
+
+### 3. 实机验收结果（2026-08-01，全部实测）
+
+| 检查项 | 结果 |
+|---|---|
+| 单元测试 | test_event_engine（回归）+ test_circuit_breaker 6 组：ALL PASS |
+| llm 禁用回归 | 4 路 2072 帧 EXIT=0；事件 1194 行分布与 Stage 6 完全一致；0 条 llm 日志；无 analysis JSONL |
+| mock 端点全链路 | qwen 369（全部 zone_entry）+ deepseek 6（周期 5 s）；375 行 analysis JSONL 逐行校验 0 失败；150 次 keyframe 编码 0 失败；管道 FPS 无影响（cam1 44.09 vs 44.07）|
+| 优先级 shed | DeepSeek kLow 被高优先级挤占后丢弃 —— 符合设计 |
+| 死端点故障注入 | curl rc=7，每请求 3 次尝试 500/1000 ms 退避；5 次失败后熔断 OPEN；288 请求被跳过；管道 2072 帧 EXIT=0 |
+| 密钥安全 | 日志只含 LLM010 错误码，无任何 key/base64 泄漏 |
+| 线上真实 API（第一轮 16:52，修复前）| deepseek-chat 成功 1 次（4791 ms, http 200）；qwen-vl-plus 5 次 http 200 但全部 schema 解析失败 → 熔断 OPEN → 288 请求跳过（费用受控）；管道 EXIT=0 不受影响 |
+| 线上真实 API（最终 18:32，修复后）| qwen3.6-flash 成功 2 次（4381 / 9042 ms, http 200），result 记录逐行可直接解析；0 条解析失败/熔断日志；1442 帧 EXIT=0；事件 1172 行与 Stage 6 一致；deepseek-v4-flash 单独真实调用验证通过 |
+| 单元测试（最终）| test_event_engine + test_circuit_breaker + test_prompt_manager（20 项）全部 ALL PASS |
+
+### 4. 验收状态
+
+**验收通过（2026-08-01）。** 线上真实 API 受限测试完成：首轮暴露 Qwen markdown 围栏解析缺陷（根因经单次真实 curl 确认），修复（围栏剥离 + 规范化存储）并切换模型（qwen3.6-flash / deepseek-v4-flash）后复验通过；管道全程不受 API 行为影响。已按 CLAUDE.md 4.6 流程同步文档并提交。
+
+### 5. 遗留
+
+- 进程退出时在途云端请求被丢弃（best-effort 设计）；
+- 未做图片去重/缩放（重复关键帧与 1280x720 原图直发，属后续优化）；
+- 响应校验为 jsoncpp 字段级，非完整 JSON Schema；
+- 2 小时稳定性测试属最终验收项。
+
+详细报告：`docs/stage7_llm.md`。

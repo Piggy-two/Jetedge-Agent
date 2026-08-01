@@ -9,6 +9,7 @@
 #include <nvdsmeta.h>
 
 #include "jetedge/common/logging.h"
+#include "jetedge/llm/llm_router.h"
 
 namespace jetedge {
 namespace events {
@@ -26,6 +27,7 @@ struct EventProbeContext {
   EventEngine* engine = nullptr;
   KeyframeWriter* writer = nullptr;
   EventWriter* event_writer = nullptr;
+  llm::LlmRouter* router = nullptr;  // may be null (cloud analysis off)
   std::vector<std::string> stream_ids;
   std::vector<std::string> class_names;
 };
@@ -108,7 +110,14 @@ GstPadProbeReturn on_event_probe(GstPad* pad, GstPadProbeInfo* info,
             surf, frame_meta, stream_id_at(ctx, stream_idx),
             event_type_str(e.type), ts_ms);
       }
+      // Local event is written immediately — the pipeline never waits for
+      // cloud analysis.
       ctx->event_writer->write(e, keyframe_name);
+      // Stage 7: async routing (non-blocking queue push; the router decides
+      // whether the event needs Qwen / DeepSeek).
+      if (ctx->router) {
+        ctx->router->enqueue_event(e, keyframe_name);
+      }
     }
   }
 
@@ -127,6 +136,7 @@ void on_event_probe_destroyed(gpointer user_data) {
 
 unsigned long install_event_probe(GstPad* pad, EventEngine* engine,
                                   KeyframeWriter* writer, EventWriter* event_writer,
+                                  llm::LlmRouter* router,
                                   const std::vector<std::string>& stream_ids,
                                   const std::vector<std::string>& class_names) {
   if (!pad || !engine || !event_writer) {
@@ -136,6 +146,7 @@ unsigned long install_event_probe(GstPad* pad, EventEngine* engine,
   ctx->engine = engine;
   ctx->writer = writer;
   ctx->event_writer = event_writer;
+  ctx->router = router;
   ctx->stream_ids = stream_ids;
   ctx->class_names = class_names;
   return gst_pad_add_probe(pad, GST_PAD_PROBE_TYPE_BUFFER, on_event_probe,

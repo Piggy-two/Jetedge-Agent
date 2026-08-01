@@ -5,6 +5,8 @@
 
 #include <ctime>
 
+#include <json/json.h>
+
 #include "jetedge/common/logging.h"
 #include "jetedge/events/event_probe.h"
 #include "jetedge/inference/metadata_probe.h"
@@ -32,7 +34,8 @@ bool Pipeline::build(const std::vector<StreamConfig>& stream_configs,
                      const inference::InferenceConfig& infer_config,
                      const TrackerConfig& tracker_config,
                      const OutputConfig& output_config,
-                     const events::EventsConfig& events_config) {
+                     const events::EventsConfig& events_config,
+                     const llm::LlmConfig& llm_config) {
   if (stream_configs.empty()) {
     LOG_ERROR("pipeline", "", "build", "PIPE001", "%s", "no streams configured");
     return false;
@@ -181,6 +184,7 @@ bool Pipeline::build(const std::vector<StreamConfig>& stream_configs,
         LOG_WARN("pipeline", "labels file load failed, class names will be '?'");
       }
     }
+    class_names_ = class_names;  // kept for LLM prompt building
 
     output_probe_id_ = inference::install_output_probe(
         out_pad, metrics_.get(), source_mgr_->stream_ids(), class_names,
@@ -220,9 +224,23 @@ bool Pipeline::build(const std::vector<StreamConfig>& stream_configs,
         }
       }
 
+      // Stage 7: async cloud-analysis router (Qwen / DeepSeek).  Created
+      // before the event probe so the probe can enqueue routed events.
+      if (llm_config.enable) {
+        llm_router_ = std::make_unique<llm::LlmRouter>();
+        if (!llm_router_->init(llm_config, source_mgr_->stream_ids(),
+                               class_names)) {
+          LOG_ERROR("pipeline", "", "build", "LLM001", "%s",
+                    "llm router init failed");
+          llm_router_.reset();
+        } else {
+          llm_router_->start();
+        }
+      }
+
       event_probe_id_ = events::install_event_probe(
           out_pad, event_engine_.get(), keyframe_writer_.get(), event_writer_.get(),
-          source_mgr_->stream_ids(), class_names);
+          llm_router_.get(), source_mgr_->stream_ids(), class_names);
       if (event_probe_id_ == 0) {
         LOG_ERROR("pipeline", "", "build", "EVT013", "%s", "event probe install failed");
         return false;
@@ -261,6 +279,16 @@ bool Pipeline::build(const std::vector<StreamConfig>& stream_configs,
                               on_periodic_report, this);
     LOG_INFO("pipeline", "periodic metrics report every %d s",
              output_config.fps_report_interval_sec);
+  }
+
+  // 8b. Stage 7: periodic DeepSeek system-metrics analysis.  Low frequency
+  // by design — the aggregated payload is small and the call is async.
+  if (llm_router_ && llm_config.deepseek_interval_sec > 0) {
+    llm_metrics_timer_id_ =
+        g_timeout_add_seconds(llm_config.deepseek_interval_sec,
+                              on_llm_metrics_report, this);
+    LOG_INFO("pipeline", "DeepSeek metrics analysis every %d s",
+             llm_config.deepseek_interval_sec);
   }
 
   // 8. Preroll.
@@ -395,6 +423,73 @@ gboolean Pipeline::on_periodic_report(gpointer user_data) {
   return G_SOURCE_CONTINUE;
 }
 
+// Aggregate current per-stream metrics + event counters into a compact JSON
+// string for the DeepSeek diagnosis prompt (no raw logs, no secrets).
+std::string Pipeline::build_metrics_json() const {
+  Json::Value root;
+  const auto summaries = metrics_ ? metrics_->snapshot()
+                                  : std::vector<metrics::MetricsRegistry::StreamSummary>{};
+  Json::Value streams(Json::arrayValue);
+  for (const auto& s : summaries) {
+    Json::Value js;
+    js["stream_id"] = s.stream_id;
+    js["input_frames"] = Json::Value::UInt64(s.input_frames);
+    js["infer_frames"] = Json::Value::UInt64(s.infer_frames);
+    js["output_frames"] = Json::Value::UInt64(s.output_frames);
+    js["detections"] = Json::Value::UInt64(s.total_detections);
+    js["obj_per_frame"] = s.avg_detections_per_frame;
+    js["input_fps"] = s.avg_input_fps;
+    js["infer_fps"] = s.avg_infer_fps;
+    js["output_fps"] = s.avg_output_fps;
+    streams.append(js);
+  }
+  root["streams"] = streams;
+
+  if (event_engine_) {
+    const auto counts = event_engine_->stream_counters();
+    const auto ids = source_mgr_ ? source_mgr_->stream_ids() : std::vector<std::string>{};
+    Json::Value events(Json::arrayValue);
+    for (size_t i = 0; i < counts.size() && i < ids.size(); ++i) {
+      Json::Value je;
+      je["stream_id"] = ids[i];
+      je["appearance"] = Json::Value::UInt64(counts[i].appearance);
+      je["disappearance"] = Json::Value::UInt64(counts[i].disappearance);
+      je["count_high"] = Json::Value::UInt64(counts[i].count_high);
+      je["count_exit"] = Json::Value::UInt64(counts[i].count_exit);
+      je["zone_entry"] = Json::Value::UInt64(counts[i].zone_entry);
+      events.append(je);
+    }
+    root["events"] = events;
+  }
+
+  if (llm_router_) {
+    const auto st = llm_router_->stats();
+    Json::Value js;
+    js["enqueued"] = Json::Value::UInt64(st.enqueued);
+    js["shed"] = Json::Value::UInt64(st.shed);
+    js["sent"] = Json::Value::UInt64(st.sent);
+    js["succeeded"] = Json::Value::UInt64(st.succeeded);
+    js["failed"] = Json::Value::UInt64(st.failed);
+    js["queued"] = Json::Value::UInt64(st.queued_now);
+    root["llm"] = js;
+  }
+
+  Json::FastWriter writer;
+  return writer.write(root);
+}
+
+gboolean Pipeline::on_llm_metrics_report(gpointer user_data) {
+  auto* self = static_cast<Pipeline*>(user_data);
+  if (!self->llm_router_) {
+    return G_SOURCE_CONTINUE;
+  }
+  const std::string metrics_json = self->build_metrics_json();
+  if (self->llm_router_->enqueue_metrics_analysis(metrics_json)) {
+    LOG_INFO("pipeline", "enqueued DeepSeek metrics analysis");
+  }
+  return G_SOURCE_CONTINUE;
+}
+
 // ---- Per-stream EOS ----------------------------------------------------------
 
 GstPadProbeReturn Pipeline::on_stream_eos(GstPad* pad, GstPadProbeInfo* info,
@@ -477,6 +572,15 @@ void Pipeline::release_resources() {
     g_source_remove(report_timer_id_);
     report_timer_id_ = 0;
   }
+  if (llm_metrics_timer_id_ != 0) {
+    g_source_remove(llm_metrics_timer_id_);
+    llm_metrics_timer_id_ = 0;
+  }
+  // Stop the LLM worker threads before destroying the event engine — the
+  // router may still be draining the queue.
+  if (llm_router_) {
+    llm_router_->stop();
+  }
   if (output_probe_id_ != 0 && (tracker_src_pad_ || nvinfer_src_pad_)) {
     GstPad* pad = tracker_src_pad_ ? tracker_src_pad_ : nvinfer_src_pad_;
     gst_pad_remove_probe(pad, output_probe_id_);
@@ -536,6 +640,7 @@ void Pipeline::release_resources() {
   keyframe_writer_.reset();
   event_writer_.reset();
   event_engine_.reset();
+  llm_router_.reset();
 
   if (loop_) {
     g_main_loop_unref(loop_);

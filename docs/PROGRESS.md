@@ -11,6 +11,7 @@
 - 阶段 4（TensorRT FP16 Engine + 单路 nvinfer 验证）：已完成 ✓（2026-08-01）
 - **阶段 5（四路检测 + Tracker + 结构化 JSONL + per-stream Metrics）：已完成 ✓（2026-08-01）**
 - **阶段 6（事件系统、事件去重和关键帧抽取）：已完成 ✓（2026-08-01）**
+- **阶段 7（Qwen + DeepSeek 异步分析）：已完成 ✓（2026-08-01）**——mock/故障注入/线上真实 API 三层验收全部通过；线上验收修复 Qwen markdown 围栏解析缺陷并切换模型（qwen3.6-flash / deepseek-v4-flash）
 
 > **阶段编号变更**：旧 `implementation_plan.md` 的阶段 2（四路 streammux）和阶段 3（TensorRT+Tracker+四路检测）已被 `README.md` 新方案重新组织。新方案 Stage 4 只做单路 TensorRT+nvinfer（不含 Tracker），四路检测和 Tracker 归入 Stage 5。
 
@@ -118,9 +119,30 @@
 
 详细报告:`docs/stage6_events.md`。
 
+## 阶段 7 验收记录（2026-08-01）
+
+### 代码与配置
+
+- llm 模块：`llm_types.h / llm_config.h / request_queue.h / circuit_breaker / http_client / prompt_manager / llm_router`（见 `docs/stage7_llm.md` §2）
+- 配置：`configs/streams_stage7.yaml`（llm 默认禁用；qwen3.6-flash / deepseek-v4-flash）
+- 密钥：env 优先 + `~/.jetedge/secrets.env` 兜底，从不打印/落盘
+
+### 实测结果（全部 Jetson 实机）
+
+| 检查项 | 结果 |
+|---|---|
+| 单元测试 | test_event_engine + test_circuit_breaker + test_prompt_manager（20 项）：ALL PASS |
+| llm 禁用回归 | 4 路 2072 帧 EXIT=0；事件 1194 行与 Stage 6 一致；0 条 llm 日志 |
+| mock 端点全链路 | qwen 369 + deepseek 6 请求；375 行 analysis JSONL 逐行校验 0 失败；管道 FPS 无影响（44.09 vs 44.07）|
+| 故障注入（死端点）| curl rc=7 重试 3 次退避；5 次失败熔断 OPEN；288 请求跳过；管道 EXIT=0 |
+| 线上真实 API（最终）| qwen3.6-flash 真实请求成功（4381/9042 ms，http 200），记录可直接解析；deepseek-v4-flash 真实调用通过；0 条解析失败/熔断；管道 EXIT=0 |
+| 线上验收修复 | qwen 返回 ```json markdown 围栏 → 新增 `strip_markdown_fence()` 剥离后校验/存储（根因经单次真实 curl 确认）|
+
+详细报告：`docs/stage7_llm.md`。
+
 ## 后续阶段
 
-- Stage 7：Qwen + DeepSeek API、异步队列和降级策略
+- ~~Stage 7：Qwen + DeepSeek API、异步队列和降级策略~~ → 已完成，见 `docs/stage7_llm.md`
 - RTSP 故障恢复与动态调度
 - ftrace 和 CPU Affinity 分析
 - INT8 PTQ 与精度回归

@@ -137,6 +137,116 @@ bool load_streams_config(const std::string& path, StreamsConfig& config, std::st
       }
     }
 
+    // ---- LLM section (optional, Stage 7) -----------------------------------
+    if (root["llm"]) {
+      const auto& llm_node = root["llm"];
+      if (llm_node["enable"])
+        config.llm.enable = llm_node["enable"].as<bool>();
+      if (llm_node["keyframe_dir"])
+        config.llm.keyframe_dir = llm_node["keyframe_dir"].as<std::string>();
+      if (llm_node["cloud_output_path"])
+        config.llm.cloud_output_path = llm_node["cloud_output_path"].as<std::string>();
+      if (llm_node["deepseek_interval_sec"]) {
+        const int v = llm_node["deepseek_interval_sec"].as<int>();
+        if (v < 0) { error_out = "llm.deepseek_interval_sec must be >= 0"; return false; }
+        config.llm.deepseek_interval_sec = v;
+      }
+
+      // Provider endpoints.
+      if (llm_node["qwen"]) {
+        const auto& n = llm_node["qwen"];
+        if (n["endpoint"])   config.llm.qwen.endpoint = n["endpoint"].as<std::string>();
+        if (n["model"])      config.llm.qwen.model = n["model"].as<std::string>();
+        if (n["max_tokens"]) {
+          const int v = n["max_tokens"].as<int>();
+          if (v < 1 || v > 8192) { error_out = "llm.qwen.max_tokens must be in [1,8192]"; return false; }
+          config.llm.qwen.max_tokens = v;
+        }
+        if (n["timeout_sec"]) {
+          const int v = n["timeout_sec"].as<int>();
+          if (v < 1 || v > 120) { error_out = "llm.qwen.timeout_sec must be in [1,120]"; return false; }
+          config.llm.qwen.timeout_sec = v;
+        }
+        if (n["max_retries"]) {
+          const int v = n["max_retries"].as<int>();
+          if (v < 0 || v > 5) { error_out = "llm.qwen.max_retries must be in [0,5]"; return false; }
+          config.llm.qwen.max_retries = v;
+        }
+        if (n["thinking_mode"])
+          config.llm.qwen.thinking_mode = n["thinking_mode"].as<bool>();
+      }
+      if (llm_node["deepseek"]) {
+        const auto& n = llm_node["deepseek"];
+        if (n["endpoint"])   config.llm.deepseek.endpoint = n["endpoint"].as<std::string>();
+        if (n["model"])      config.llm.deepseek.model = n["model"].as<std::string>();
+        if (n["max_tokens"]) {
+          const int v = n["max_tokens"].as<int>();
+          if (v < 1 || v > 8192) { error_out = "llm.deepseek.max_tokens must be in [1,8192]"; return false; }
+          config.llm.deepseek.max_tokens = v;
+        }
+        if (n["timeout_sec"]) {
+          const int v = n["timeout_sec"].as<int>();
+          if (v < 1 || v > 120) { error_out = "llm.deepseek.timeout_sec must be in [1,120]"; return false; }
+          config.llm.deepseek.timeout_sec = v;
+        }
+        if (n["max_retries"]) {
+          const int v = n["max_retries"].as<int>();
+          if (v < 0 || v > 5) { error_out = "llm.deepseek.max_retries must be in [0,5]"; return false; }
+          config.llm.deepseek.max_retries = v;
+        }
+        if (n["thinking_mode"])
+          config.llm.deepseek.thinking_mode = n["thinking_mode"].as<bool>();
+      }
+
+      // Queue settings.
+      if (llm_node["queue"]) {
+        const auto& n = llm_node["queue"];
+        if (n["max_size"]) {
+          const int v = n["max_size"].as<int>();
+          if (v < 1 || v > 256) { error_out = "llm.queue.max_size must be in [1,256]"; return false; }
+          config.llm.queue.max_size = v;
+        }
+        if (n["worker_threads"]) {
+          const int v = n["worker_threads"].as<int>();
+          if (v < 1 || v > 8) { error_out = "llm.queue.worker_threads must be in [1,8]"; return false; }
+          config.llm.queue.worker_threads = v;
+        }
+      }
+
+      // Circuit breaker settings.
+      if (llm_node["circuit_breaker"]) {
+        const auto& n = llm_node["circuit_breaker"];
+        if (n["failure_threshold"]) {
+          const int v = n["failure_threshold"].as<int>();
+          if (v < 1) { error_out = "llm.circuit_breaker.failure_threshold must be >= 1"; return false; }
+          config.llm.circuit_breaker.failure_threshold = v;
+        }
+        if (n["reset_timeout_sec"]) {
+          const int v = n["reset_timeout_sec"].as<int>();
+          if (v < 1) { error_out = "llm.circuit_breaker.reset_timeout_sec must be >= 1"; return false; }
+          config.llm.circuit_breaker.reset_timeout_sec = v;
+        }
+        if (n["half_open_success_threshold"]) {
+          const int v = n["half_open_success_threshold"].as<int>();
+          if (v < 1) { error_out = "llm.circuit_breaker.half_open_success_threshold must be >= 1"; return false; }
+          config.llm.circuit_breaker.half_open_success_threshold = v;
+        }
+      }
+
+      // Routing table.
+      if (llm_node["routing"]) {
+        const auto& n = llm_node["routing"];
+        if (n["appearance_to_qwen"])
+          config.llm.routing.appearance_to_qwen = n["appearance_to_qwen"].as<bool>();
+        if (n["disappearance_to_qwen"])
+          config.llm.routing.disappearance_to_qwen = n["disappearance_to_qwen"].as<bool>();
+        if (n["zone_entry_to_qwen"])
+          config.llm.routing.zone_entry_to_qwen = n["zone_entry_to_qwen"].as<bool>();
+        if (n["count_high_to_qwen"])
+          config.llm.routing.count_high_to_qwen = n["count_high_to_qwen"].as<bool>();
+      }
+    }
+
     // ---- Streams section ---------------------------------------------------
     const auto& streams_node = root["streams"];
     if (!streams_node || !streams_node.IsSequence()) {
