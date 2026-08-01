@@ -41,6 +41,34 @@ bool load_streams_config(const std::string& path, StreamsConfig& config, std::st
         config.inference.gie_unique_id = inf_node["gie_unique_id"].as<int>();
     }
 
+    // ---- Tracker section (optional) ----------------------------------------
+    if (root["tracker"]) {
+      const auto& tr_node = root["tracker"];
+      if (tr_node["enable"])
+        config.tracker.enable = tr_node["enable"].as<bool>();
+      if (tr_node["ll_lib_file"])
+        config.tracker.ll_lib_file = tr_node["ll_lib_file"].as<std::string>();
+      if (tr_node["ll_config_file"])
+        config.tracker.ll_config_file = tr_node["ll_config_file"].as<std::string>();
+      if (tr_node["width"])
+        config.tracker.width = tr_node["width"].as<int>();
+      if (tr_node["height"])
+        config.tracker.height = tr_node["height"].as<int>();
+      if (tr_node["gpu_id"])
+        config.tracker.gpu_id = tr_node["gpu_id"].as<int>();
+    }
+
+    // ---- Output section (optional) ------------------------------------------
+    if (root["output"]) {
+      const auto& out_node = root["output"];
+      if (out_node["jsonl_path"])
+        config.output.jsonl_path = out_node["jsonl_path"].as<std::string>();
+      if (out_node["labels_file_path"])
+        config.output.labels_file_path = out_node["labels_file_path"].as<std::string>();
+      if (out_node["fps_report_interval_sec"])
+        config.output.fps_report_interval_sec = out_node["fps_report_interval_sec"].as<int>();
+    }
+
     // ---- Streams section ---------------------------------------------------
     const auto& streams_node = root["streams"];
     if (!streams_node || !streams_node.IsSequence()) {

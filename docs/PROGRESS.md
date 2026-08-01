@@ -7,10 +7,9 @@
 - 阶段 0（环境核查）：已完成 ✓
 - 阶段 1（单路硬件解码）：已完成 ✓
 - 阶段 3（YOLO11s ONNX 导出、验证、传输与 SHA256 一致性验收）：已完成 ✓
-- 旧方案阶段 2（四路 streammux + fakesink）：已完成 ✓，代码将在新方案 Stage 5 中复用
-- **阶段 4（TensorRT FP16 Engine + 单路 nvinfer 验证）：已完成 ✓（2026-08-01）**
-
-当前准备进入阶段 5：四路检测、Tracker、结构化输出和 Metrics。
+- 旧方案阶段 2（四路 streammux + fakesink）：已完成 ✓，代码已在新方案 Stage 5 中复用
+- 阶段 4（TensorRT FP16 Engine + 单路 nvinfer 验证）：已完成 ✓（2026-08-01）
+- **阶段 5（四路检测 + Tracker + 结构化 JSONL + per-stream Metrics）：已完成 ✓（2026-08-01）**
 
 > **阶段编号变更**：旧 `implementation_plan.md` 的阶段 2（四路 streammux）和阶段 3（TensorRT+Tracker+四路检测）已被 `README.md` 新方案重新组织。新方案 Stage 4 只做单路 TensorRT+nvinfer（不含 Tracker），四路检测和 Tracker 归入 Stage 5。
 
@@ -44,4 +43,49 @@
 - EOS、Ctrl-C 优雅退出，RSS 稳定（306.6 → 307.4 MiB）
 - 关键修复：`net-scale-factor=1/255`（0-255 输入导致检测错乱）、DeepStream 传 2 维 dims、相对路径解析
 
-阶段 5 待做：四路检测（nvinfer batch-size=4）、Tracker、结构化输出和 Metrics。
+## 阶段 5 验收记录（2026-08-01）
+
+### 模型与 Engine
+
+- 派生 batch-dynamic ONNX：`yolo11s_dynamic.onnx`（37,944,131 B，SHA256 `fa27873a...b766e48`，由已验收 ONNX 派生，权重不变，输入/输出 batch 维符号化 + 6 个 hard-coded batch=1 Reshape 常量改为 batch-relative；脚本 `scripts/make_batch_dynamic_onnx.py`）
+- 派生 ONNX 验证（ORT 1.23.2 CPU）：batch=1 输出与原 ONNX 完全一致（max diff 0.0）；batch=4 推理 PASSED（输出 4x84x5040）
+- FP16 Engine：`yolo11s_b4_384x640_fp16.engine`（22,278,268 B ≈ 21.25 MiB，SHA256 `136bd5fd...b06818d`，构建耗时 494.2 s，仅 1 条 DLA-fallback warning）
+- Engine profile：images MIN=1x3x384x640 OPT=4x3x384x640 MAX=4x3x384x640；binding images 4x3x384x640 → output0 4x84x5040（opt）
+
+### 代码与配置
+
+- nvtracker 集成（NvDCF_perf，ll-config 用 DeepStream 样例配置），pipeline：streammux → nvinfer → nvtracker → fakesink
+- 结构化 JSONL 输出：`{"ts_ms","stream_id","frame_num","track_id","class_id","class","confidence","bbox":[l,t,w,h]}` → `logs/stage5_detections.jsonl`
+- per-stream metrics：input（nvinfer sink）/ inference（nvinfer src）/ output（nvtracker src）三阶段 FPS + 每帧检测数 + 周期报告（5s）
+- 配置：`configs/streams_stage5.yaml`（4 路不同视频）、`configs/nvinfer_yolo11s_b4_fp16.txt`（batch-size=4）
+
+### 实测结果
+
+| 检查项 | 结果 |
+|---|---|
+| 4 路不同视频（720p bus/car、office、walk、ride_bike）| 2072 帧全部处理，cam1 1442 帧 / cam2 163 / cam3 288 / cam4 179，EXIT=0 |
+| stream_id 映射 | cam1 car/bus/truck、cam2 person、cam3 person、cam4 bicycle/skateboard/backpack（与各场景匹配）|
+| 4 路同一视频 | 4×1442 帧，每路 17248 检测、obj/frame=11.96 完全一致（batch 偏移正确）|
+| 每流 FPS（4 路同视频）| in=infer=out=52.84 fps/流（满 batch，总吞吐 ~211 fps）|
+| track_id 跨帧稳定 | cam1 track=60 连续 701 帧无断档；cam2 track=0/1 连续 161 帧 |
+| bbox 坐标还原 | bus [235,1,404,382]@640x384 → [469.05,1.96,805.56,716.23]@1280x720（×2.0 / ×1.875，误差 <1px）|
+| 置信度 | bus conf=0.955（Stage 4: 0.95）、car conf 0.58-0.97，与 ground truth 吻合 |
+| JSONL | 18,333 行（4 路不同视频），每行含 stream_id/track_id/class/confidence/bbox |
+| EOS | 4 路 EOS 分别处理（`Successfully handled EOS for source_id=0..3`）+ 总 EOS 优雅退出 |
+| Ctrl-C | SIGINT → 优雅退出，EXIT=0 |
+| 内存 | 3 次连续运行 RSS 起始 610-611 MB、15s 收敛 ~615 MB；跨运行无残留增长（无泄漏）|
+| dynamic engine batch 不满 | 短流先 EOS 后 batch 不满，nvinfer 按实际 batch 推理，无报错 |
+
+### 遗留说明
+
+- 4 路不同视频运行时长由最短视频 + cam1 决定（本配置 ~33 s）；长时间稳定性测试（2 小时）属于最终验收项，尚未执行
+- 坐标空间为 mux 输出 1280x720；nvinfer 对 720p 输入做非等比拉伸到 640x384 推理，bbox 精确映射回 720p 空间（已数值验证）
+- JSONL 每行记录 tracker 之后的 obj_meta（confidence 保留检测置信度，track_id 由 NvDCF 分配）
+- Stage 6 事件系统未开始
+
+## 阶段 5 待做（后续阶段）
+
+- Stage 6：事件系统、事件去重和关键帧抽取
+- RTSP 故障恢复与动态调度
+- ftrace 和 CPU Affinity 分析
+- INT8 PTQ 与精度回归

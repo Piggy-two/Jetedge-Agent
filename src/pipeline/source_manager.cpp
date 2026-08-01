@@ -96,6 +96,15 @@ std::vector<SourceManager::SourceStats> SourceManager::get_stats() const {
   return stats;
 }
 
+std::vector<std::string> SourceManager::stream_ids() const {
+  std::vector<std::string> ids;
+  ids.reserve(sources_.size());
+  for (const auto& src : sources_) {
+    ids.push_back(src->stream_id());
+  }
+  return ids;
+}
+
 void SourceManager::print_stats() const {
   uint64_t total = 0;
   for (const auto& src : sources_) {

@@ -16,6 +16,8 @@ namespace common {
 struct StreamsConfig {
   pipeline::MuxConfig mux;
   inference::InferenceConfig inference;
+  pipeline::TrackerConfig tracker;
+  pipeline::OutputConfig output;
   std::vector<pipeline::StreamConfig> streams;
 };
 

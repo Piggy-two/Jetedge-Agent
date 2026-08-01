@@ -7,7 +7,8 @@
 - Windows 与 Jetson SHA256 已确认一致：`41abd2ff906712b41c60de9b7d5d5f09918e23a331d80cc0926071600fd3e078`。
 - Jetson 模型路径：`/home/seeed/JetEdge-Agent/models/yolo11s.onnx`。
 - **阶段 4 已完成并验收通过（2026-08-01）**：Jetson 上构建 TensorRT FP16 Engine 成功（`yolo11s_b1_384x640_fp16.engine`，21.81 MiB，SHA256 `c6cc41d0...a82274a`），自写 YOLO11 自定义 parser 接入单路 DeepStream `nvinfer`，单路 720p 视频 1440 帧检测正常（bus/car 高置信，与 ground truth 吻合），EOS / Ctrl-C / 内存行为全部验证通过。
-- 当前准备进入阶段 5：四路检测、Tracker、结构化输出和 Metrics。
+- **阶段 5 已完成并验收通过（2026-08-01）**：派生 batch-dynamic ONNX 并构建 batch=4 FP16 Engine（`yolo11s_b4_384x640_fp16.engine`，21.25 MiB，SHA256 `136bd5fd...b06818d`），四路视频 + nvstreammux（batch=4）+ nvinfer（batch=4）+ nvtracker 全链路跑通，输出结构化 JSONL（stream_id / track_id / class / confidence / bbox），per-stream input/inference/output FPS 与每帧检测数验证通过，EOS / Ctrl-C / 内存 / stream_id 映射 / track_id 稳定性全部实测通过。
+- 当前准备进入阶段 6：事件系统、事件去重和关键帧抽取。
 - GitHub 同步源码、配置模板、脚本、Markdown 和 `models/model_info.txt`；模型、视频、Engine、密钥和大日志通过 `.gitignore` 排除。
 - 模型和其他大文件通过 SCP/rsync 同步，并用 SHA256 做 Windows 与 Jetson 端到端一致性验收。
 - 大模型策略：事件驱动、按需调用、异步处理；Kimi/DeepSeek/Agent 不进入实时逐帧主链路。
@@ -19,9 +20,9 @@
 ## 当前状态快照
 
 - 当前日期：2026-08-01
-- 已完成：Jetson 环境与远程开发基础、单路本地视频硬件解码、YOLO11s ONNX 导出验证、模型传输与 SHA256 一致性验收、**阶段 4（TensorRT FP16 Engine + 单路 nvinfer 检测验证）**
-- 当前阶段：**阶段 5——四路检测、Tracker、结构化输出和 Metrics**
-- 当前禁止提前开展：RTSP、事件系统、Kimi、DeepSeek、Agent 工具执行、INT8
+- 已完成：Jetson 环境与远程开发基础、单路本地视频硬件解码、YOLO11s ONNX 导出验证、模型传输与 SHA256 一致性验收、**阶段 4（TensorRT FP16 Engine + 单路 nvinfer 检测验证）**、**阶段 5（四路检测 + Tracker + 结构化 JSONL + per-stream Metrics）**
+- 当前阶段：**阶段 6——事件系统、事件去重和关键帧抽取**
+- 当前禁止提前开展：RTSP、Kimi、DeepSeek、Agent 工具执行、INT8、自适应调度
 
 当前模型信息：
 
@@ -274,36 +275,39 @@ Agent 不参与逐帧决策，也不直接操作 DeepStream 内部对象。
 - [x] 阶段 4：Jetson 上构建 TensorRT FP16 Engine（`yolo11s_b1_384x640_fp16.engine`，21.81 MiB，SHA256 `c6cc41d0...a82274a`）；
 - [x] 阶段 4：自写 YOLO11 自定义 parser（`src/inference/yolo11_parser.cpp`）并接入单路 DeepStream `nvinfer`；
 - [x] 阶段 4：单路 720p 视频验证——1440 帧检测正常（bus/car 高置信，与 ground truth 吻合）、EOS / Ctrl-C / 内存行为通过。
+- [x] 阶段 5：派生 batch-dynamic ONNX（`yolo11s_dynamic.onnx`，权重不变，脚本 `scripts/make_batch_dynamic_onnx.py`）并构建 batch=4 FP16 Engine（`yolo11s_b4_384x640_fp16.engine`，21.25 MiB，SHA256 `136bd5fd...b06818d`）；
+- [x] 阶段 5：四路视频 + nvstreammux（batch=4）+ nvinfer（batch=4）+ nvtracker（NvDCF）全链路；
+- [x] 阶段 5：结构化 JSONL 输出（stream_id / track_id / class / confidence / bbox → `logs/stage5_detections.jsonl`）；
+- [x] 阶段 5：per-stream metrics——input / inference / output 三阶段 FPS + 每帧检测数 + 周期报告；
+- [x] 阶段 5：实机验收——stream_id 映射、track_id 跨帧稳定、bbox 坐标还原、EOS / Ctrl-C / 内存全部通过。
 
 ### 当前阶段
 
-- [ ] **阶段 5：四路检测、Tracker、结构化输出和 Metrics。**
+- [ ] **阶段 6：事件系统、事件去重和关键帧抽取。**
 
-阶段 5 的最小目标：
+阶段 6 的最小目标（待展开）：
 
 ```text
-四路视频 + nvstreammux（batch=4）+ nvinfer（batch=4）
+规则事件定义（出现/消失/计数/区域）
         ↓
-nvtracker 目标追踪
+事件去重与状态管理
         ↓
-结构化 JSONL 输出（stream_id / track_id / class / bbox / confidence）
+关键帧抽取与本地缓存
         ↓
-每路 FPS 与基础 Metrics
+事件 JSONL / 事件日志
 ```
 
-阶段 5 当前不包含：
+阶段 6 当前不包含：
 
 - RTSP；
-- 事件系统；
 - Kimi；
 - DeepSeek；
 - Agent；
-- INT8。
+- INT8；
+- 自适应调度。
 
 ### 后续阶段
 
-- [ ] 阶段 6：事件系统、事件去重和关键帧抽取；
-- [ ] 阶段 6：事件系统、事件去重和关键帧抽取；
 - [ ] 阶段 7：Kimi + DeepSeek API、异步队列和降级策略；
 - [ ] 阶段 8：Agent 白名单工具调用、验证、审计和回滚；
 - [ ] RTSP 故障恢复；
@@ -864,6 +868,19 @@ Policy 校验候选工具，保存快照，执行低风险调整，重新 Benchm
 - [x] Pipeline 正常处理 EOS；
 - [x] Ctrl-C 安全退出；
 - [x] 无明显持续内存增长（RSS 306.6 → 307.4 MiB）。
+
+### 阶段 5（2026-08-01 验收通过）
+
+- [x] 派生 batch-dynamic ONNX（权重不变，batch=1 输出与原模型 max diff 0.0；batch=4 推理 PASSED）；
+- [x] batch=4 FP16 Engine 在 Jetson 构建成功（21.25 MiB，SHA256 `136bd5fd...b06818d`，profile MIN=1 OPT=4 MAX=4）；
+- [x] 四路视频 + nvstreammux（batch=4）+ nvinfer（batch=4）全链路；
+- [x] nvtracker 集成并分配稳定 track_id（cam1 最长 701 帧连续无断档）；
+- [x] JSONL 结构化输出（stream_id / track_id / class / confidence / bbox，18,333 行）；
+- [x] stream_id 映射正确（四路不同场景视频检测内容各自匹配；同一视频四路每路检测数完全一致）；
+- [x] bbox 坐标还原验证（640x384 空间 → 1280x720 空间映射误差 <1px）；
+- [x] per-stream input / inference / output FPS 与每帧检测数（周期报告 + 汇总）；
+- [x] EOS / Ctrl-C 优雅退出；
+- [x] 无明显持续内存增长（3 次连续运行 RSS 收敛于 ~615 MB，无跨运行残留）。
 
 ### 最终基础能力
 

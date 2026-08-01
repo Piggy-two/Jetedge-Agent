@@ -24,3 +24,26 @@ SHA256: 41abd2ff906712b41c60de9b7d5d5f09918e23a331d80cc0926071600fd3e078
 ONNX Checker: PASSED
 ONNX Runtime inference: PASSED
 NaN/Inf check: PASSED
+
+==================================================
+Batch-dynamic derivative (Stage 5, built on Jetson)
+==================================================
+
+File: yolo11s_dynamic.onnx
+Purpose: enable nvinfer batch=4 (4-stream mux) with one engine.
+Changes vs the accepted ONNX (weights and operators unchanged):
+  1. input/output batch dims made symbolic ("batch");
+  2. six Reshape target initializers with hard-coded first dim 1 changed to 0
+     (ONNX Reshape: 0 copies the input dim) -- YOLO11s C2PSA attention,
+     the shared stride flatten [1,64,-1], and the DFL head reshapes.
+Script: scripts/make_batch_dynamic_onnx.py
+Validation (Jetson, onnxruntime 1.23.2 CPU):
+  batch=1 output equals original ONNX exactly (max diff 0.0)
+  batch=4 inference PASSED (output 4x84x5040)
+SHA256: fa27873a74571f0f5546a0d4d9b1658e8bb34367f7b58777ae09b0b03b766e48
+
+Engine profile (trtexec): images MIN=1x3x384x640 OPT=4x3x384x640 MAX=4x3x384x640
+Engine: yolo11s_b4_384x640_fp16.engine
+  size 22,278,268 B (21.2462 MiB), build time 494.2 s, bindings
+  images 4x3x384x640 -> output0 4x84x5040 (opt profile), one DLA-fallback
+  warning only, SHA256 136bd5fdf7eed35716e35337a3d941dd735c2e9c856c84b8be46cea78b06818d

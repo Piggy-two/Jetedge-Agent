@@ -256,3 +256,112 @@
 - Stage 4 只验证单路（batch=1）。`configs/streams.yaml` 的 inference 保持 `enable: false`（4 路 mux 与 nvinfer batch-size=1 不匹配属预期）。
 - 坐标空间为模型输入 640x384；letterbox 还原到原始分辨率由后续阶段处理（当前 mux 输出 640x384 直接匹配模型输入，无 letterbox 变换）。
 - 检测框合理性已通过数值对比验证；可视化（OSD）留待需要时再做。
+
+---
+
+## 阶段 5：四路检测 + Tracker + 结构化 JSONL + per-stream Metrics（已完成）
+
+**日期**：2026-08-01
+
+### 阶段目标（对齐 README 新方案）
+
+```text
+四路视频 + nvstreammux（batch=4）+ nvinfer（batch=4）
+        ↓
+nvtracker 目标追踪
+        ↓
+结构化 JSONL 输出（stream_id / track_id / class / confidence / bbox）
+        ↓
+每路 FPS 与基础 Metrics
+```
+
+不包含：RTSP、事件系统、Kimi、DeepSeek、Agent、INT8、自适应调度。
+
+### 1. 派生 batch-dynamic ONNX（Jetson 实机，实测）
+
+已验收 ONNX（`yolo11s.onnx`，SHA256 `41abd2ff...fd3e078`）输入为静态 `1x3x384x640`，无法直接构建 batch=4 engine。派生工作流（`scripts/make_batch_dynamic_onnx.py`）：
+
+1. 输入/输出 batch 维符号化（"batch"）；
+2. **扫描发现并修复 6 个 hard-coded batch=1 的 Reshape target initializer**（首元素 1 → 0，ONNX Reshape 语义 0=复制输入对应维）：
+   - `/model.10/m/m.0/attn/Constant_output_0`（C2PSA attn [1,4,128,240]）
+   - `/model.10/m/m.0/attn/Constant_3_output_0`（C2PSA attn [1,256,12,20]）
+   - `/model.23/Constant_output_0`（stride 展平 [1,64,-1]）
+   - `/model.23/Constant_3_output_0`（[1,64,-1]）
+   - `/model.23/dfl/Constant_output_0`（DFL head [1,4,16,5040]）
+   - `/model.23/dfl/Constant_1_output_0`（[1,4,16,5040]）
+
+   调试发现过程：先只修 3 个 → ORT batch=4 推理报 DFL Reshape `{1,64,20160} → [1,4,16,5040]` 失败；改为"扫描所有被 Reshape 引用的 int64 常量且首元素为 1"后全部修复。
+3. ORT 1.23.2（CPU）验证：
+   - 派生 ONNX batch=1 输出与原 ONNX **完全一致**（max diff = 0.0）—— 权重未变，语义保持；
+   - batch=4 推理输出 `4x84x5040`，PASSED；
+   - batch=1 vs batch=4 同 slice 差异 ~3e-4（CPU 算子 kernel 差异，不影响 sigmoid 后分类阈值判定）。
+
+产物：`yolo11s_dynamic.onnx`（37,944,131 B，SHA256 `fa27873a74571f0f5546a0d4d9b1658e8bb34367f7b58777ae09b0b03b766e48`）。
+
+### 2. 构建 batch=4 FP16 Engine（Jetson 实机，实测）
+
+```bash
+/usr/src/tensorrt/bin/trtexec \
+  --onnx=/home/seeed/JetEdge-Agent/models/yolo11s_dynamic.onnx \
+  --saveEngine=/home/seeed/JetEdge-Agent/models/yolo11s_b4_384x640_fp16.engine \
+  --fp16 --memPoolSize=workspace:2048 \
+  --minShapes=images:1x3x384x640 --optShapes=images:4x3x384x640 --maxShapes=images:4x3x384x640
+```
+
+| 项目 | 实测值 |
+|---|---|
+| Engine 大小 | 22,278,268 B ≈ 21.25 MiB |
+| Engine SHA256 | `136bd5fdf7eed35716e35337a3d941dd735c2e9c856c84b8be46cea78b06818d` |
+| 构建耗时 | 494.2 s（约 8.2 分钟） |
+| Binding | images `4x3x384x640`（opt）→ output0 `4x84x5040`（opt），MIN=1 / MAX=4 |
+| Warning | 1 条 DLA-fallback warning（无影响） |
+| 日志 | `/home/seeed/JetEdge-Agent/models/trtexec_build_b4_20260801.log`（不入 Git） |
+
+### 3. 代码变更
+
+| 文件 | 操作 | 说明 |
+|---|---|---|
+| `include/jetedge/pipeline/stream_config.h` | 修改 | 新增 `TrackerConfig`（enable/ll_lib_file/ll_config_file/width/height/gpu_id）、`OutputConfig`（jsonl_path/labels_file_path/fps_report_interval_sec） |
+| `include/jetedge/common/config_loader.h` + `src/common/config_loader.cpp` | 修改 | 解析 `tracker:` / `output:` YAML 段 |
+| `include/jetedge/metrics/metrics_registry.h` + `src/metrics/metrics_registry.cpp` | 新建 | per-stream 计数器 + 2s 滑动窗口 FPS（input/inference/output 三阶段）+ 全程平均，互斥锁保护 |
+| `include/jetedge/inference/metadata_probe.h` + `src/inference/metadata_probe.cpp` | 重写 | 三个 probe：input（nvinfer sink）/ infer（nvinfer src）/ output（nvtracker src）；output probe 输出 JSONL（ts_ms/stream_id/frame_num/track_id/class_id/class/confidence/bbox）+ 更新 metrics；`load_label_file` 支持 `"id name"` 与纯名字两种格式 |
+| `include/jetedge/pipeline/pipeline.h` + `src/pipeline/pipeline.cpp` | 重写 | 链接 streammux → nvinfer → nvtracker → fakesink；三 probe 安装与清理；周期 FPS 报告（g_timeout_add_seconds）；最终统计表格 |
+| `apps/jetedge_server/main.cpp` | 修改 | 传递 tracker/output 配置 |
+| `CMakeLists.txt` | 修改 | 加入 metrics 模块 |
+| `scripts/make_batch_dynamic_onnx.py` | 新建 | batch-dynamic ONNX 派生脚本（可复现，记录 SHA256） |
+| `scripts/analyze_stage5_jsonl.py` | 新建 | JSONL 分析：每流帧数/检测数/track 稳定性/类别分布 |
+| `configs/nvinfer_yolo11s_b4_fp16.txt` | 新建 | batch-size=4 nvinfer 配置 |
+| `configs/streams_stage5.yaml` | 新建 | 4 路不同视频 + tracker + output 配置 |
+| `models/model_info.txt` | 修改 | 记录派生 ONNX 与 b4 Engine 信息 |
+
+调试中修复的问题：
+1. **labels 解析 bug**：`coco_labels.txt` 是纯名字列表（行号=class_id），初版解析器按 `"id name"` 解析 → "hair drier" 被解析成 id=0/name="drier"、其余全部丢弃（JSONL 中 class 全为 "?"）。改为两种格式自动识别后，class 分布正确（cam1 car/bus/truck 与 ground truth 吻合）。
+2. **avg FPS 计算 bug**：窗口滚动后全程平均用了"当前窗口开始时间"作分母，导致 cam1 显示 1595 fps。增加 `run_start_ns`（注册时记录），avg = 总帧数 / (now - run_start)。
+3. **input probe 位置**：初版装在 nvinfer src（实为推理后），按 Stage 5 三阶段要求改为 nvinfer sink（input）/ nvinfer src（infer）/ nvtracker src（output）。
+
+### 4. 实机验收结果（全部实测）
+
+| 检查项 | 结果 |
+|---|---|
+| nvinfer 加载 b4 engine | `deserialized trt engine` 成功；dynamic profile min 1x3x384x640 / opt 4x3x384x640 / max 4x3x384x640 |
+| nvtracker | `libnvds_nvmultiobjecttracker.so` 初始化成功（NvDCF_perf 配置） |
+| 4 路不同视频 | cam1 1442 帧 / cam2 163 / cam3 288 / cam4 179，共 2072 帧，EXIT=0 |
+| 4 路同一视频 | 4×1442=5768 帧，每路 17248 检测、obj/frame=11.96 完全一致 |
+| 每流 FPS | 4 路同视频：in=infer=out=52.84 fps/流（~211 fps 总吞吐）；4 路不同视频：cam1 ~44 fps |
+| track_id 稳定 | cam1 track=60 连续 701 帧（gaps=0）；cam2 track=0/1 各 161 帧；cam4 track=2/3 各 177 帧 |
+| class 分布 | cam1 car 10119/bus 179/truck 550；cam2 person 6549；cam3 person；cam4 bicycle/skateboard/backpack —— 与各场景匹配 |
+| 置信度 | bus conf=0.955（Stage 4: 0.95）；car conf 0.58-0.97 |
+| bbox 坐标还原 | bus [235,1,404,382]@640x384 → [469.05,1.96,805.56,716.23]@1280x720（×2.0 / ×1.875，误差 <1px，nvinfer 拉伸缩放映射精确） |
+| JSONL | 4 路不同视频 run 输出 18,333 行 → `logs/stage5_detections.jsonl` |
+| 周期报告 | 每 5 s 打印每流 in/infer/out FPS + 检测数（短流 EOS 后保持统计） |
+| EOS | 4 路 EOS 分别处理（`Successfully handled EOS for source_id=0..3`）+ 总 EOS 优雅退出；短流先 EOS 后 batch 不满，dynamic engine 按实际 batch 推理无报错 |
+| Ctrl-C | SIGINT → 优雅退出，EXIT=0 |
+| 内存 | 3 次连续运行：起始 RSS 610-611 MB，15 s 收敛 ~615 MB；跨运行无残留增长（无泄漏）；相比 Stage 4 单路 306 MB 增加为 4 路解码 + 推理 + tracker 的正常开销 |
+
+### 5. 遗留说明
+
+- 4 路不同视频总时长由 cam1 决定（本配置 ~33 s）；连续 2 小时稳定性测试属于最终验收项，未执行。
+- 坐标空间为 mux 输出 1280x720；nvinfer 对 720p 输入非等比拉伸到 640x384 推理，bbox 精确映射回 720p（数值验证）。若后续需要等比 letterbox，需在 nvinfer 或 source 侧配置。
+- `streams.yaml`（Stage 2 baseline）的 inference 仍保持 `enable: false`；Stage 5 使用 `streams_stage5.yaml`。
+- JSONL 的 confidence 为检测置信度（nvtracker 保留 obj_meta->confidence）；tracker 自身置信度（shadow 状态等）未输出，留待 Stage 6 事件系统需要时补充。
+- 下一阶段 Stage 6（事件系统、去重、关键帧）尚未开始。

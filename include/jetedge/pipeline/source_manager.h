@@ -49,6 +49,9 @@ class SourceManager {
   // Print frame statistics to stdout.
   void print_stats() const;
 
+  // Stream ids in mux pad_index order (index == nvstreammux sink pad index).
+  std::vector<std::string> stream_ids() const;
+
   GstElement* streammux() const { return streammux_; }
 
  private:

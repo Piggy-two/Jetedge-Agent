@@ -85,7 +85,8 @@ int main(int argc, char* argv[]) {
   jetedge::pipeline::Pipeline pipeline;
   g_pipeline = &pipeline;
 
-  if (!pipeline.build(config.streams, config.mux, config.inference)) {
+  if (!pipeline.build(config.streams, config.mux, config.inference,
+                      config.tracker, config.output)) {
     LOG_ERROR("main", "", "init", "BUILD010", "%s", "pipeline build failed");
     gst_deinit();
     return EXIT_FAILURE;

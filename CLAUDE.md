@@ -9,7 +9,7 @@ Before any work, read these files in order:
 3. `docs/PROGRESS.md`
 4. `models/model_info.txt`
 
-Current scope is Stage 4 only: Jetson-side TensorRT FP16 Engine build and single-stream DeepStream `nvinfer` validation.
+Current scope is Stage 5 only: four-stream detection (batch=4), nvtracker integration, structured JSONL output, and a minimal per-stream metrics registry.
 
 Hard constraints:
 
@@ -20,8 +20,8 @@ Hard constraints:
 - Before every `git pull`, run `git status` and inspect uncommitted changes.
 - Do not overwrite uncommitted changes.
 - Do not force push.
-- Do not generate large Stage 5 to Stage 8 code early.
-- Do not add Kimi, DeepSeek, Agent, four-stream, Tracker, or Metrics work while Stage 4 is still pending.
+- Do not generate large Stage 6 to Stage 8 code early.
+- Do not add RTSP, event engine, Kimi, DeepSeek, Agent, or INT8 work while Stage 5 is still pending.
 
 Read this file before planning, syncing, editing, building, running, or debugging anything in this repository.
 `README.md` contains the current stage snapshot and the cross-device workflow. Detailed plans and measured reports live under `docs/`.
@@ -70,6 +70,8 @@ ONNX Runtime inference: PASSED
 NaN/Inf check: PASSED
 Transfer to Jetson: complete
 Windows/Jetson SHA256 comparison: PASSED
+TensorRT FP16 engine build: complete (21.81 MiB, SHA256 c6cc41d0...a82274a)
+Single-stream nvinfer detection: complete (1440 frames, bus/car conf>0.9, EOS/Ctrl-C/memory verified)
 ```
 
 Current model artifact:
@@ -88,28 +90,26 @@ Metadata path: /home/seeed/JetEdge-Agent/models/model_info.txt
 The only approved implementation stage now is:
 
 ```text
-Stage 4:
-1. Inspect the installed TensorRT, DeepStream, GStreamer, nvinfer, and sample environment.
-2. Build a TensorRT FP16 engine from the accepted ONNX model on the Jetson.
-3. Record build command, versions, bindings, warnings, engine size, and SHA256.
-4. Integrate the engine with a single local-video DeepStream nvinfer pipeline.
-5. Validate YOLO11 metadata parsing, boxes, classes, confidence, EOS, Ctrl-C, and memory behavior.
+Stage 5:
+1. Four local video sources → nvstreammux (batch=4) → nvinfer (batch=4).
+2. Integrate nvtracker and validate track IDs across frames.
+3. Structured JSONL output: stream_id, track_id, class, confidence, bbox.
+4. Minimal per-stream metrics: input/inference/output FPS, per-frame detection counts.
+5. Validate stream_id mapping, EOS, Ctrl-C, and memory behavior on the Jetson.
 ```
 
 Out of scope for the current stage:
 
-- four-stream inference;
-- tracker integration;
-- metrics framework beyond the minimum needed for acceptance evidence;
 - RTSP;
 - event engine;
 - Kimi or DeepSeek clients;
 - Agent code;
 - INT8;
+- adaptive scheduling;
 - custom CUDA post-processing;
 - broad refactoring.
 
-Do not mark Stage 4 complete until the acceptance checks run on the Jetson.
+Do not mark Stage 5 complete until the acceptance checks run on the Jetson.
 
 ---
 

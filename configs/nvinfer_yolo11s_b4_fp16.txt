@@ -1,0 +1,32 @@
+# nvinfer configuration for YOLO11s FP16, batch=4 (Stage 5).
+#
+# Engine built on this Jetson from the batch-dynamic ONNX derived from the
+# accepted yolo11s.onnx (weights unchanged, only the batch dimension made
+# dynamic: MIN=1 OPT=4 MAX=4):
+#   /home/seeed/JetEdge-Agent/models/yolo11s_b4_384x640_fp16.engine
+# Custom parser (built by CMake into build/):
+#   build/libnvds_yolo11_parser.so
+
+[property]
+gpu-id=0
+model-engine-file=/home/seeed/JetEdge-Agent/models/yolo11s_b4_384x640_fp16.engine
+labelfile-path=/home/seeed/projects/jetedge-agent/configs/coco_labels.txt
+batch-size=4
+process-mode=1
+model-color-format=0
+# 1/255: the model expects 0-1 normalized input; nvinfer feeds 0-255
+net-scale-factor=0.00392156862745098
+# 0=FP32, 1=INT8, 2=FP16
+network-mode=2
+num-detected-classes=80
+interval=0
+gie-unique-id=1
+# 2 = NMS clustering applied by nvinfer after the custom parser runs
+cluster-mode=2
+parse-bbox-func-name=NvDsInferParseCustomYolo11
+custom-lib-path=/home/seeed/projects/jetedge-agent/build/libnvds_yolo11_parser.so
+
+[class-attrs-all]
+topk=20
+nms-iou-threshold=0.5
+pre-cluster-threshold=0.25

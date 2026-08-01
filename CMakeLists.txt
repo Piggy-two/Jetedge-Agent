@@ -26,6 +26,7 @@ set(JETEDGE_SOURCES
   apps/jetedge_server/main.cpp
   src/common/config_loader.cpp
   src/inference/metadata_probe.cpp
+  src/metrics/metrics_registry.cpp
   src/pipeline/pipeline.cpp
   src/pipeline/source_bin.cpp
   src/pipeline/source_manager.cpp
@@ -37,6 +38,7 @@ set(JETEDGE_HEADERS
   include/jetedge/common/config_loader.h
   include/jetedge/inference/inference_config.h
   include/jetedge/inference/metadata_probe.h
+  include/jetedge/metrics/metrics_registry.h
   include/jetedge/pipeline/pipeline.h
   include/jetedge/pipeline/source_bin.h
   include/jetedge/pipeline/source_manager.h
