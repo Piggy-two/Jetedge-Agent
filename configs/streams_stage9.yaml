@@ -1,0 +1,118 @@
+# JetEdge-Agent Stage 9 configuration — four RTSP streams + deterministic
+# runtime scheduler (NORMAL | PRESSURE | THERMAL | CRITICAL | RECOVERY).
+#
+# Test sources: local MediaMTX + ffmpeg publish loops (scripts/rtsp_serve.sh).
+#   rtsp://127.0.0.1:8554/cam1..cam4
+#
+# Scheduler behavior (deterministic C++ state machine, no LLM):
+#   NORMAL     {high,normal,low} = {0,0,0}          full rate
+#   PRESSURE   cpu >= 70%        = {0,1,2}          increase inference interval
+#   THERMAL    temp >= 75°C      = {0,2,3}          throttle low-priority streams
+#   CRITICAL   temp >= 82°C      = {1,3,15}         low ≈ paused; no load increase
+#   RECOVERY   staged {0,1,2}→{0,0,1}→{0,0,0}       gradual restore → NORMAL
+# interval k keeps every (k+1)-th frame of that stream (dropped at the
+# decoder src pad, before nvstreammux).  Priority protection: cam1 high is
+# the last stream throttled.
+#
+# Hysteresis (enter > exit), min_hold (state must be held before changing),
+# cooldown (no quick re-escalation after NORMAL), escalation budget per
+# window (bounded changes).
+
+rtsp:
+  enable: true
+  live_source: true
+  transport: tcp
+  watch_timeout_sec: 5
+  first_frame_timeout_sec: 12
+  max_retries: 5
+  backoff_base_ms: 1000
+  backoff_max_ms: 15000
+  verify_sec: 5
+  min_fps: 1.0
+  rtspsrc_latency_ms: 500
+
+mux:
+  output_width: 1280
+  output_height: 720
+  batch_timeout_usec: 40000
+
+inference:
+  enable: true
+  config_file_path: configs/nvinfer_yolo11s_b4_fp16.txt
+  gie_unique_id: 1
+
+tracker:
+  enable: true
+  ll_lib_file: /opt/nvidia/deepstream/deepstream-7.1/lib/libnvds_nvmultiobjecttracker.so
+  ll_config_file: /opt/nvidia/deepstream/deepstream-7.1/samples/configs/deepstream-app/config_tracker_NvDCF_perf.yml
+  width: 960
+  height: 544
+  gpu_id: 0
+
+output:
+  jsonl_path: /home/seeed/projects/jetedge-agent/logs/stage9_detections.jsonl
+  labels_file_path: /home/seeed/projects/jetedge-agent/configs/coco_labels.txt
+  fps_report_interval_sec: 5
+
+events:
+  enable: true
+  jsonl_path: /home/seeed/projects/jetedge-agent/logs/stage9_events.jsonl
+  keyframe_dir: /home/seeed/projects/jetedge-agent/logs/keyframes
+  max_keyframes: 150
+  jpeg_quality: 85
+  disappear_grace_frames: 15
+  count_threshold: 3
+  count_hysteresis: 1
+  classes: [0, 1, 2, 3, 5, 7]
+  zones:
+    - name: road
+      stream_id: cam1
+      rect: [0, 250, 1280, 470]
+
+# LLM analysis stays DISABLED — Stage 9 focuses on the deterministic
+# scheduler only (async cloud analysis is Stage 7, already accepted).
+llm:
+  enable: false
+  keyframe_dir: /home/seeed/projects/jetedge-agent/logs/keyframes
+  cloud_output_path: /home/seeed/projects/jetedge-agent/logs/stage9_analysis.jsonl
+  deepseek_interval_sec: 60
+
+# ---- Stage 9: deterministic scheduler ---------------------------------------
+scheduler:
+  enable: true
+  sample_interval_sec: 2
+  pressure_cpu_enter: 70.0      # % CPU (aggregate /proc/stat)
+  pressure_cpu_exit: 50.0
+  thermal_temp_enter: 75.0      # °C (max readable thermal zone)
+  thermal_temp_exit: 70.0
+  critical_temp_enter: 82.0
+  critical_temp_exit: 76.0
+  min_hold_sec: 15              # minimum time in a state before changing
+  cooldown_sec: 30              # re-escalation block after returning to NORMAL
+  max_adjustments_per_window: 2 # escalation budget (de-escalation never blocked)
+  adjust_window_sec: 120
+
+streams:
+  - id: cam1
+    type: rtsp
+    uri: rtsp://127.0.0.1:8554/cam1
+    priority: high
+    expected_fps: 30
+
+  - id: cam2
+    type: rtsp
+    uri: rtsp://127.0.0.1:8554/cam2
+    priority: normal
+    expected_fps: 30
+
+  - id: cam3
+    type: rtsp
+    uri: rtsp://127.0.0.1:8554/cam3
+    priority: normal
+    expected_fps: 30
+
+  - id: cam4
+    type: rtsp
+    uri: rtsp://127.0.0.1:8554/cam4
+    priority: low
+    expected_fps: 30

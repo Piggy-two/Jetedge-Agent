@@ -42,6 +42,8 @@ set(JETEDGE_SOURCES
   src/pipeline/reconnect_policy.cpp
   src/pipeline/source_bin.cpp
   src/pipeline/source_manager.cpp
+  src/scheduler/scheduler_policy.cpp
+  src/scheduler/system_metrics.cpp
 )
 
 # ---- Headers (for IDE integration) -----------------------------------------
@@ -69,6 +71,8 @@ set(JETEDGE_HEADERS
   include/jetedge/pipeline/source_bin.h
   include/jetedge/pipeline/source_manager.h
   include/jetedge/pipeline/stream_config.h
+  include/jetedge/scheduler/scheduler_policy.h
+  include/jetedge/scheduler/system_metrics.h
 )
 
 # ---- YOLO11 custom parser (loaded by nvinfer at runtime) -------------------
@@ -126,8 +130,14 @@ add_executable(test_reconnect_policy tests/test_reconnect_policy.cpp
 target_include_directories(test_reconnect_policy PRIVATE ${CMAKE_SOURCE_DIR}/include)
 target_link_libraries(test_reconnect_policy PRIVATE Threads::Threads)
 
+add_executable(test_scheduler_policy tests/test_scheduler_policy.cpp
+               src/scheduler/scheduler_policy.cpp)
+target_include_directories(test_scheduler_policy PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(test_scheduler_policy PRIVATE Threads::Threads)
+
 enable_testing()
 add_test(NAME event_engine COMMAND test_event_engine)
 add_test(NAME circuit_breaker COMMAND test_circuit_breaker)
 add_test(NAME prompt_manager COMMAND test_prompt_manager)
 add_test(NAME reconnect_policy COMMAND test_reconnect_policy)
+add_test(NAME scheduler_policy COMMAND test_scheduler_policy)

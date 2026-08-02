@@ -180,6 +180,7 @@ void SourceBin::teardown(GstElement* pipeline) {
   decoder_ = nullptr;
   frame_count_.store(0);
   last_frame_ts_ms_.store(0);
+  drop_counter_.store(0);  // first frame after the rebuild is kept
 }
 
 void SourceBin::sync_state_with_parent() {
@@ -198,8 +199,23 @@ GstPadProbeReturn SourceBin::on_frame_probe(GstPad* /*pad*/, GstPadProbeInfo* in
   auto* self = static_cast<SourceBin*>(user_data);
   // Only count buffers (not events like EOS).
   if (info->type & GST_PAD_PROBE_TYPE_BUFFER) {
+    // Watchdog counters first: RTSP stall detection and post-reconnect FPS
+    // verification must keep seeing the FULL source rate even while the
+    // scheduler drops frames below this probe.
     self->frame_count_.fetch_add(1, std::memory_order_relaxed);
     self->last_frame_ts_ms_.store(mono_ms(), std::memory_order_relaxed);
+
+    // Stage 9: scheduler inference interval.  interval k keeps every
+    // (k+1)-th frame; the drop counter is separate so the first frame after
+    // a (re)build is always kept (nvstreammux live mode needs a first buffer
+    // from every source before it starts batching).
+    const int interval = self->infer_interval_.load(std::memory_order_relaxed);
+    if (interval > 0) {
+      const uint64_t n = self->drop_counter_.fetch_add(1, std::memory_order_relaxed);
+      if (n % static_cast<uint64_t>(interval + 1) != 0) {
+        return GST_PAD_PROBE_DROP;
+      }
+    }
   }
   return GST_PAD_PROBE_OK;
 }

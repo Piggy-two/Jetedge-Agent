@@ -9,9 +9,9 @@ Before any work, read these files in order:
 3. `docs/PROGRESS.md`
 4. `models/model_info.txt`
 
-Current scope is Stage 7 only: Qwen (通义千问) + DeepSeek async analysis clients, bounded async queues, HTTP reuse, timeout/retry/circuit-breaking, and schema-validated degradation (API failure must never stop the video pipeline).
+Current scope is Stage 10 only: ftrace / CPU Affinity performance analysis of the multi-stream pipeline (per CLAUDE.md §13 metric-first workflow: symptom → evidence → bottleneck → controlled change → before/after → keep or revert). No scheduler, RTSP, LLM, or event-engine extensions while Stage 10 is pending.
 
-Stage 6 (event engine, dedup, keyframes) is complete and accepted (2026-08-01); see `docs/stage6_events.md`.
+Stages 4-9 are complete and accepted (2026-08-01/02): single-stream inference (`docs/stage4` evidence in `docs/PROGRESS.md`), four-stream + tracker + metrics, events + keyframes (`docs/stage6_events.md`), Qwen + DeepSeek async analysis (`docs/stage7_llm.md`), RTSP fault isolation (`docs/stage8_rtsp.md`), deterministic adaptive scheduler (`docs/stage9_scheduler.md`).
 
 Hard constraints:
 
@@ -22,8 +22,8 @@ Hard constraints:
 - Before every `git pull`, run `git status` and inspect uncommitted changes.
 - Do not overwrite uncommitted changes.
 - Do not force push.
-- Do not generate large Stage 7 to Stage 9 code early.
-- Do not add RTSP, Agent, INT8, adaptive-scheduler, or event-engine extensions while Stage 7 is still pending.
+- Do not generate large Stage 10 to Stage 12 code early.
+- Do not add Agent, INT8, Control API, or event-engine extensions while Stage 10 is still pending.
 
 Read this file before planning, syncing, editing, building, running, or debugging anything in this repository.
 `README.md` contains the current stage snapshot and the cross-device workflow. Detailed plans and measured reports live under `docs/`.
@@ -61,7 +61,7 @@ The real-time pipeline must not depend on Qwen, DeepSeek, Python, the network, o
 
 ## 2. Current Approved Stage Snapshot
 
-As of 2026-08-01, the following work is accepted:
+As of 2026-08-02, the following work is accepted:
 
 ```text
 Jetson remote-development environment: complete
@@ -76,6 +76,9 @@ TensorRT FP16 engine build: complete (21.81 MiB, SHA256 c6cc41d0...a82274a)
 Single-stream nvinfer detection: complete (1440 frames, bus/car conf>0.9, EOS/Ctrl-C/memory verified)
 Four-stream detection + nvtracker + JSONL + metrics: complete (batch=4, 2072 frames, EOS/Ctrl-C/memory verified)
 Event engine + dedup + keyframe extraction: complete (1194 valid JSONL events, 150 keyframes, SSIM 0.985 content check)
+Qwen + DeepSeek async analysis: complete (queue/circuit-breaker/schema, 375 mock + real API acceptance, docs/stage7_llm.md)
+RTSP fault isolation and recovery: complete (per-stream state machine, 10-round fault injection, docs/stage8_rtsp.md)
+Deterministic adaptive scheduler: complete (NORMAL|PRESSURE|THERMAL|CRITICAL|RECOVERY, 54 checks + 4 real runs, docs/stage9_scheduler.md)
 ```
 
 Current model artifact:
@@ -94,25 +97,22 @@ Metadata path: /home/seeed/JetEdge-Agent/models/model_info.txt
 The only approved implementation stage now is:
 
 ```text
-Stage 7:
-1. Event routing: local rules stay local; ambiguous visual events → Qwen; system metrics/logs → DeepSeek.
-2. Bounded async request queues with priority and overload shedding.
-3. Reused HTTP client/connection/TLS; timeout, limited retry, backoff, circuit breaker.
-4. Fixed prompts + schemas; dynamic data placed later; bounded output tokens.
-5. API failure must never terminate or block the real-time pipeline; emit local events immediately, mark cloud analysis pending.
+Stage 10:
+1. ftrace / trace_marker / CPU Affinity analysis of the real pipeline (follow §13:
+   symptom → evidence → bottleneck hypothesis → controlled change → before/after → keep or revert).
+2. Report measured evidence under docs/; no optimization claim without before/after data.
 ```
 
 Out of scope for the current stage:
 
-- RTSP;
 - Agent tool execution;
 - INT8;
-- adaptive scheduling;
+- Control API, snapshots, rollback;
 - custom CUDA post-processing;
-- event-engine extensions (keyframe async write, ROI crops);
+- scheduler / RTSP / LLM / event-engine extensions;
 - broad refactoring.
 
-Do not mark Stage 7 complete until the acceptance checks run on the Jetson.
+Do not mark Stage 10 complete until the acceptance checks run on the Jetson.
 
 ---
 

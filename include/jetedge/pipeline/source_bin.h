@@ -69,6 +69,16 @@ class SourceBin {
   // uses this to detect a dead RTSP source.
   uint64_t last_frame_ts_ms() const { return last_frame_ts_ms_.load(); }
 
+  // Stage 9 scheduler: inference interval for this stream (0 = every frame,
+  // k = keep every (k+1)-th frame).  The decoder src pad probe drops frames
+  // before they reach nvstreammux, so decode+infer+track+events all run at
+  // the throttled rate.  The watchdog counters are updated BEFORE the drop
+  // decision, so RTSP stall detection and FPS verification keep seeing the
+  // full source rate.  Atomic: written by the GLib main loop (scheduler
+  // tick), read by the streaming thread.
+  void set_infer_interval(int interval) { infer_interval_.store(interval); }
+  int infer_interval() const { return infer_interval_.load(); }
+
   // True when `obj` is one of the CURRENT chain elements.  After a rebuild
   // the old elements are destroyed; a bus message whose source is an old
   // element is stale (its error was already handled by the rebuild) and must
@@ -99,6 +109,11 @@ class SourceBin {
   guint frame_probe_id_ = 0;
   std::atomic<uint64_t> frame_count_{0};
   std::atomic<uint64_t> last_frame_ts_ms_{0};
+  std::atomic<int> infer_interval_{0};       // Stage 9 scheduler
+  std::atomic<uint64_t> drop_counter_{0};    // Stage 9: frames offered (kept
+                                             // and dropped) for interval gating;
+                                             // reset by teardown so the first
+                                             // frame after a rebuild is kept
 };
 
 }  // namespace pipeline

@@ -78,6 +78,10 @@ class SourceManager {
   // by a rebuild are stale and must not count as new failures.
   bool is_current_chain_element(int idx, GstObject* obj) const;
 
+  // Stage 9 scheduler: inference interval for source `idx` (see SourceBin).
+  // Survives RTSP rebuilds (the SourceBin object is not replaced).
+  void set_infer_interval(int idx, int interval);
+
   GstElement* streammux() const { return streammux_; }
 
  private:

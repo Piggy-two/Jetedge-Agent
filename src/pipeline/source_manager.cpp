@@ -147,6 +147,13 @@ bool SourceManager::is_current_chain_element(int idx, GstObject* obj) const {
   return sources_[static_cast<size_t>(idx)]->is_chain_element(obj);
 }
 
+void SourceManager::set_infer_interval(int idx, int interval) {
+  if (idx < 0 || idx >= static_cast<int>(sources_.size())) {
+    return;
+  }
+  sources_[static_cast<size_t>(idx)]->set_infer_interval(interval);
+}
+
 bool SourceManager::rebuild_source(int idx, GstElement* pipeline) {
   if (idx < 0 || idx >= static_cast<int>(sources_.size())) {
     LOG_ERROR("source_mgr", "", "rebuild", "MGR010", "invalid source index %d", idx);

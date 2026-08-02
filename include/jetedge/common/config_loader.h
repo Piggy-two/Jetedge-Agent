@@ -11,6 +11,7 @@
 #include "jetedge/inference/inference_config.h"
 #include "jetedge/llm/llm_config.h"
 #include "jetedge/pipeline/stream_config.h"
+#include "jetedge/scheduler/scheduler_policy.h"
 
 namespace jetedge {
 namespace common {
@@ -23,6 +24,7 @@ struct StreamsConfig {
   events::EventsConfig events;
   llm::LlmConfig llm;                 // Stage 7: async cloud analysis
   pipeline::RtspConfig rtsp;          // Stage 8: RTSP source + reconnect
+  scheduler::SchedulerConfig scheduler;  // Stage 9: deterministic scheduler
   std::vector<pipeline::StreamConfig> streams;
 };
 

@@ -11,6 +11,7 @@
 - **阶段 6 已完成并验收通过（2026-08-01）**：规则事件（appearance / disappearance / count_high / count_exit / zone_entry）+ 事件去重状态机 + 事件 JSONL（1194 行全部合法 JSON）+ 事件触发的整帧关键帧 JPEG（150 次保存、0 错误，内容与源视频 SSIM 0.985 验证）。关键帧取帧最终采用官方 `nvds_obj_enc`（GPU 编码任意 NVMM layout），此前 gst_buffer_map 直读像素与 NvBufSurfaceMap/NvBufSurface2Raw 两条路线均经实机证伪。
 - **阶段 7 已完成并验收通过（2026-08-01）**：事件路由（本地规则本地化 / zone_entry→Qwen 视觉复核 / 周期指标→DeepSeek 诊断）+ 有界异步优先级队列（过载按优先级丢弃）+ 复用的 libcurl HTTP 客户端（超时/有限重试/指数退避/熔断 5/30/2）+ 固定提示词与 jsoncpp 字段级 schema 校验 + **API 故障绝不影响实时管道**。三层验收全部实测通过：单元测试（含熔断器 6 组与 schema 解析 20 项）、本地 mock 端点全链路（qwen 369 + deepseek 6，375 行 analysis JSONL 校验 0 失败，管道 FPS 无影响）、死端点故障注入（熔断 OPEN 后 288 请求跳过）、线上真实 API（qwen3.6-flash 与 deepseek-v4-flash 真实请求成功，首轮暴露的 qwen markdown 围栏解析缺陷经根因确认后修复）。
 - **阶段 8 已完成并验收通过（2026-08-02）**：RTSP 故障隔离与恢复——每流独立状态机（OFFLINE → CONNECTING → RUNNING → DEGRADED → RECONNECTING → FAILED）、指数退避重连（1s→2s→4s→8s→15s）、恢复后输入 FPS 验证（verify 5s / min_fps 1.0）、重试预算耗尽进 FAILED 停止重试风暴、bus ERROR 按元素归属分流（流级错误单流重连，其余流不受影响）。实机验收：4 路 RTSP 冒烟（四路 10s 内进 RUNNING，200s 零重连零失败）、10 轮 cam3 停/恢复故障注入（cam1/2/4 全程 0 stall / 0 reconnect / 0 failure，cam3 每轮自动恢复）、FAILED 路径（6 次真实连续失败后停止重试）、事件 JSONL 8419 行 0 非法、RSS 收敛、EOS/Ctrl-C 干净。本会话定位修复 2 个缺陷：watchdog tick 时间戳下溢导致假 stall（cam4 每轮必误报——now 在循环开头捕获，前一流重建耗时后下溢）、垂死 rtspsrc 的陈旧错误重复计数导致健康流误 FAILED（元素身份校验）。测试环境 MediaMTX + `scripts/rtsp_serve.sh`（用户目录，无系统包）。
+- **阶段 9 已完成并验收通过（2026-08-02）**：确定性 C++ 动态调度器——纯逻辑状态机 NORMAL | PRESSURE | THERMAL | CRITICAL | RECOVERY（滞回、最小保持 15s、冷却 30s、调整预算 2/120s、热优先级、CRITICAL 不增载、缺失指标不困死），每状态按优先级输出推理间隔表（NORMAL{0,0,0} / PRESSURE{0,1,2} / THERMAL{0,2,3} / CRITICAL{1,3,15} / RECOVERY 三级逐级恢复）；只读系统采样（/proc/stat、/proc/meminfo、thermal zone 最大温度）；decoder src 探针逐流间隔 drop（计数先于丢弃，RTSP watchdog 看全速率，重建后首帧必保留）；优先级保护（cam1 high 最晚被节流）。实机验收：单测 54 checks + ctest 5/5；Run A 正常负载全程 NORMAL 零干扰；Run B 6×yes 烧机 PRESSURE 精确节流（cam2 实测 15.0 fps、cam4 10.0 fps = 30/2、30/3）优先级保护 + 停负载后 RECOVERY 逐级恢复；Run C 真实温度 53.8°C→THERMAL、56.1°C→CRITICAL 预算封顶、cam4 ~2fps 运行 0 假 stall、管道零影响；Run D 闭环验证并发现调参规则（滞回间隙须 > 热噪声 ~0.5°C）；JSONL 0 非法、RSS 收敛、全部干净退出。详见 `docs/stage9_scheduler.md`。
 - GitHub 同步源码、配置模板、脚本、Markdown 和 `models/model_info.txt`；模型、视频、Engine、密钥和大日志通过 `.gitignore` 排除。
 - 模型和其他大文件通过 SCP/rsync 同步，并用 SHA256 做 Windows 与 Jetson 端到端一致性验收。
 - 大模型策略：事件驱动、按需调用、异步处理；Qwen/DeepSeek/Agent 不进入实时逐帧主链路。
@@ -22,9 +23,9 @@
 ## 当前状态快照
 
 - 当前日期：2026-08-02
-- 已完成：Jetson 环境与远程开发基础、单路本地视频硬件解码、YOLO11s ONNX 导出验证、模型传输与 SHA256 一致性验收、**阶段 4（TensorRT FP16 Engine + 单路 nvinfer 检测验证）**、**阶段 5（四路检测 + Tracker + 结构化 JSONL + per-stream Metrics）**、**阶段 6（事件系统、事件去重和关键帧抽取）**、**阶段 7（Qwen + DeepSeek 异步分析）**、**阶段 8（RTSP 故障隔离与恢复）**
-- 当前阶段：**阶段 9 准备（未开始）——确定性 C++ 动态调度器（NORMAL | PRESSURE | THERMAL | CRITICAL | RECOVERY）与自适应推理间隔，见 `docs/stage8_rtsp.md` 遗留与 CLAUDE.md §15**
-- 当前禁止提前开展：Agent 工具执行、INT8、自适应调度实现（Qwen/DeepSeek 仅限异步低频分析，不进入实时主链路）
+- 已完成：Jetson 环境与远程开发基础、单路本地视频硬件解码、YOLO11s ONNX 导出验证、模型传输与 SHA256 一致性验收、**阶段 4（TensorRT FP16 Engine + 单路 nvinfer 检测验证）**、**阶段 5（四路检测 + Tracker + 结构化 JSONL + per-stream Metrics）**、**阶段 6（事件系统、事件去重和关键帧抽取）**、**阶段 7（Qwen + DeepSeek 异步分析）**、**阶段 8（RTSP 故障隔离与恢复）**、**阶段 9（确定性 C++ 动态调度器）**
+- 当前阶段：**阶段 10 准备（未开始）——ftrace / CPU Affinity 性能分析，见 `docs/stage9_scheduler.md` 遗留与 README §17**
+- 当前禁止提前开展：Agent 工具执行、INT8、Control API（ftrace / CPU Affinity 完成前）
 
 当前模型信息：
 
@@ -284,21 +285,22 @@ Agent 不参与逐帧决策，也不直接操作 DeepStream 内部对象。
 - [x] 阶段 5：实机验收——stream_id 映射、track_id 跨帧稳定、bbox 坐标还原、EOS / Ctrl-C / 内存全部通过。
 - [x] 阶段 6：事件系统——appearance / disappearance / count_high / count_exit / zone_entry 规则事件、去重状态机（grace / 滞回）、事件 JSONL（1194 行全部合法 JSON）、事件触发的整帧关键帧 JPEG（150 次保存、0 错误，SSIM 0.985 内容验证）、每流事件统计并入 metrics、EOS/Ctrl-C flush 验证通过（`docs/stage6_events.md`）。
 - [x] 阶段 7：Qwen + DeepSeek 异步分析——事件路由（本地 / zone_entry→Qwen / 周期指标→DeepSeek）、有界异步优先级队列（满时按优先级丢弃）、libcurl 复用（超时/重试/退避/熔断 5/30/2）、固定提示词 + jsoncpp 字段级 schema 校验（含 markdown 围栏剥离）、云端分析 JSONL。验收：单元测试全过（熔断 6 组 / schema 20 项）、mock 端点全链路（375 行校验 0 失败，FPS 无影响）、死端点故障注入（熔断 OPEN、288 请求跳过、管道不受影响）、线上真实 API（qwen3.6-flash 与 deepseek-v4-flash 真实请求成功；`docs/stage7_llm.md`）。
+- [x] 阶段 8：RTSP 故障隔离与恢复（2026-08-02 验收通过）——ReconnectPolicy 状态机（37 checks 单测）、RtspConfig 配置、SourceBin rtsp 分支与运行时重建、bus ERROR 流级分流、1s watchdog（断流/退避/重建/FPS 验证/FAILED）、故障注入验收（10 轮 cam3 停/恢复 + FAILED 路径）、本会话修复 watchdog 下溢假 stall 与陈旧错误重复计数两个缺陷。详见 `docs/stage8_rtsp.md`。
 
 ### 当前阶段
 
-- [x] **阶段 8：RTSP 故障隔离与恢复**（2026-08-02 验收通过）——ReconnectPolicy 状态机（37 checks 单测）、RtspConfig 配置、SourceBin rtsp 分支与运行时重建、bus ERROR 流级分流、1s watchdog（断流/退避/重建/FPS 验证/FAILED）、故障注入验收（10 轮 cam3 停/恢复 + FAILED 路径）、本会话修复 watchdog 下溢假 stall 与陈旧错误重复计数两个缺陷。详见 `docs/stage8_rtsp.md`。
+- [x] **阶段 9：确定性 C++ 动态调度器**（2026-08-02 验收通过）——纯逻辑状态机 NORMAL | PRESSURE | THERMAL | CRITICAL | RECOVERY（滞回/最小保持/冷却/调整预算/热优先级/CRITICAL 不增载/缺失指标不困死）、只读系统采样、decoder src 探针逐流推理间隔 drop（RTSP watchdog 看全速率）、优先级保护、状态表 NORMAL{0,0,0}/PRESSURE{0,1,2}/THERMAL{0,2,3}/CRITICAL{1,3,15}/RECOVERY 逐级恢复。验收：单测 54 checks + ctest 5/5；实机 Run A 零干扰 / Run B 烧机 PRESSURE 精确节流（cam2 15.0、cam4 10.0 fps）+ 逐级恢复 / Run C 真实温度 THERMAL→CRITICAL 预算封顶管道零影响 / Run D 闭环与调参规则（滞回间隙须 > 热噪声）。详见 `docs/stage9_scheduler.md`。
 
 已批准但不属于当前阶段：
 
 - Agent 工具执行；
 - INT8；
+- Control API、快照和回滚；
 - 事件引擎扩展（关键帧异步写、ROI 裁剪）；
 - 大模型调用进入实时主链路。
 
 ### 后续阶段
 
-- [ ] 确定性 C++ 动态调度器（NORMAL | PRESSURE | THERMAL | CRITICAL | RECOVERY，含自适应推理间隔）；
 - [ ] ftrace 和 CPU Affinity 分析；
 - [ ] Agent 白名单工具调用、验证、审计和回滚；
 - [ ] INT8 PTQ 与精度回归；
@@ -944,7 +946,7 @@ Policy 校验候选工具，保存快照，执行低风险调整，重新 Benchm
 | `docs/environment_report.md` | Jetson 实机环境核查 |
 | `docs/architecture.md` | 系统架构设计 |
 | `docs/benchmark.md` | Benchmark 方法与结果 |
-| `docs/scheduler.md` | 动态调度器设计 |
+| `docs/stage9_scheduler.md` | Stage 9 动态调度器验收报告 |
 | `docs/agent_design.md` | Agent 状态机和工具设计 |
 | `docs/tool_api.md` | Control API 和工具协议 |
 | `docs/safety.md` | Agent 权限、验证和回滚 |

@@ -683,3 +683,40 @@ Stage 7 原定使用 **Kimi + DeepSeek** 双 Provider，现调整为 **Qwen (通
 
 - FAILED 不自动复活（设计如此，重试预算耗尽）；2 小时稳定性测试属最终验收项
 - 确定性 C++ 动态调度器（NORMAL|PRESSURE|THERMAL|CRITICAL|RECOVERY）+ 自适应推理间隔 = Stage 9
+
+## Stage 9：确定性 C++ 动态调度器（NORMAL | PRESSURE | THERMAL | CRITICAL | RECOVERY）
+
+**日期**：2026-08-02。验收通过，详见 `docs/stage9_scheduler.md`。
+
+### 1. 交付物
+
+- `scheduler_policy`：纯逻辑状态机（滞回 enter>exit、min_hold、cooldown、调整预算 2/120s、热优先级、CRITICAL 不增载、缺失指标不困死）；状态表 NORMAL{0,0,0} / PRESSURE{0,1,2} / THERMAL{0,2,3} / CRITICAL{1,3,15} / RECOVERY 三级逐级恢复
+- `system_metrics`：只读采样 /proc/stat + /proc/meminfo + thermal_zone*/temp（最大可读温度 + zone 名；cv0-2 缺失跳过）
+- SourceBin decoder src 探针逐流间隔 drop（计数先于丢弃 → RTSP watchdog 看全速率；drop_counter 重建归零 → 首帧必保留）
+- `scheduler:` YAML 段全字段校验；Pipeline 2s tick 驱动 + 结构化日志 + 周期报告
+
+### 2. 单测
+
+`test_scheduler_policy` 12 组 54 checks ALL PASS；ctest 5/5。
+
+### 3. 实机验收摘要（4 路 RTSP）
+
+| Run | 场景 | 结果 |
+|---|---|---|
+| A | 正常负载 100s | 全程 NORMAL [0 0 0]，0 重连，cpu 29-37% / temp 53-57°C，无回归 |
+| B | 6×yes 烧机 65s | cpu 99.9% → PRESSURE [0 1 2]（cam2/3=1、cam4=2、cam1 high=0 受保护）；实测帧率 cam2 15.0 / cam4 10.0 fps（=30/2、30/3 精确）；停烧机 → RECOVERY 三级（[0 1 2]→[0 0 1]→[0 0 0]）→ NORMAL；全程 0 失败 |
+| C | debug 低阈值（真实温度）| 53.8°C → THERMAL [0 2 3]；56.1°C → CRITICAL [1 3 15]；预算 2/2 封顶；cpu 33→25%（降载生效）；cam4 ~2fps 运行 0 假 stall |
+| D | 阈值 56/55.6 闭环 | CRITICAL⇄RECOVERY 闭环机制验证；发现调参规则：**滞回间隙须 > 热噪声（~0.5°C）**，0.4°C 间隙导致边界抖动（每次迁移本身正确）|
+
+JSONL 逐行校验 0 非法（events 2287+2868、detections 43123+48795）；RSS 631.9→633.1 MB 收敛；全部 SIGINT 干净退出。
+
+### 4. 本会话修复
+
+- kNormal 中 CRITICAL 进入被 cooldown 误挡（安全迁移须无条件放行）→ 修复 + 测试
+- 间隔变更日志旧值=新值（赋值先于日志）→ 调整顺序
+
+### 5. 遗留
+
+- CRITICAL 低优先级为有界间隔 15（非完全停帧；live mux 停帧行为未实机验证）
+- 本机主动散热使负载下温度稳定 ~55.5°C，无法在不停管道前提下制造 >1°C 降温摆幅 → CRITICAL→RECOVERY 稳态单次恢复由单测 + Run B 同路径覆盖
+- 2 小时稳定性 / GPU 专项压力测试属最终验收项；下一阶段 ftrace / CPU Affinity（README 路线）

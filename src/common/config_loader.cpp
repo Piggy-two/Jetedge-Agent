@@ -308,6 +308,84 @@ bool load_streams_config(const std::string& path, StreamsConfig& config, std::st
       }
     }
 
+    // ---- Scheduler section (optional, Stage 9) ------------------------------
+    if (root["scheduler"]) {
+      const auto& s_node = root["scheduler"];
+      if (s_node["enable"])
+        config.scheduler.enable = s_node["enable"].as<bool>();
+      if (s_node["sample_interval_sec"]) {
+        const int v = s_node["sample_interval_sec"].as<int>();
+        if (v < 1 || v > 60) { error_out = "scheduler.sample_interval_sec must be in [1,60]"; return false; }
+        config.scheduler.sample_interval_sec = v;
+      }
+      if (s_node["pressure_cpu_enter"]) {
+        const double v = s_node["pressure_cpu_enter"].as<double>();
+        if (v <= 0.0 || v >= 100.0) { error_out = "scheduler.pressure_cpu_enter must be in (0,100)"; return false; }
+        config.scheduler.pressure_cpu_enter = v;
+      }
+      if (s_node["pressure_cpu_exit"]) {
+        const double v = s_node["pressure_cpu_exit"].as<double>();
+        if (v <= 0.0 || v >= 100.0) { error_out = "scheduler.pressure_cpu_exit must be in (0,100)"; return false; }
+        config.scheduler.pressure_cpu_exit = v;
+      }
+      if (config.scheduler.pressure_cpu_exit >= config.scheduler.pressure_cpu_enter) {
+        error_out = "scheduler.pressure_cpu_exit must be < scheduler.pressure_cpu_enter";
+        return false;
+      }
+      if (s_node["thermal_temp_enter"]) {
+        const double v = s_node["thermal_temp_enter"].as<double>();
+        if (v < 30.0 || v > 125.0) { error_out = "scheduler.thermal_temp_enter must be in [30,125]"; return false; }
+        config.scheduler.thermal_temp_enter = v;
+      }
+      if (s_node["thermal_temp_exit"]) {
+        const double v = s_node["thermal_temp_exit"].as<double>();
+        if (v < 30.0 || v > 125.0) { error_out = "scheduler.thermal_temp_exit must be in [30,125]"; return false; }
+        config.scheduler.thermal_temp_exit = v;
+      }
+      if (config.scheduler.thermal_temp_exit >= config.scheduler.thermal_temp_enter) {
+        error_out = "scheduler.thermal_temp_exit must be < scheduler.thermal_temp_enter";
+        return false;
+      }
+      if (s_node["critical_temp_enter"]) {
+        const double v = s_node["critical_temp_enter"].as<double>();
+        if (v < 30.0 || v > 125.0) { error_out = "scheduler.critical_temp_enter must be in [30,125]"; return false; }
+        config.scheduler.critical_temp_enter = v;
+      }
+      if (s_node["critical_temp_exit"]) {
+        const double v = s_node["critical_temp_exit"].as<double>();
+        if (v < 30.0 || v > 125.0) { error_out = "scheduler.critical_temp_exit must be in [30,125]"; return false; }
+        config.scheduler.critical_temp_exit = v;
+      }
+      if (config.scheduler.critical_temp_exit >= config.scheduler.critical_temp_enter) {
+        error_out = "scheduler.critical_temp_exit must be < scheduler.critical_temp_enter";
+        return false;
+      }
+      if (config.scheduler.critical_temp_enter <= config.scheduler.thermal_temp_enter) {
+        error_out = "scheduler.critical_temp_enter must be > scheduler.thermal_temp_enter";
+        return false;
+      }
+      if (s_node["min_hold_sec"]) {
+        const int v = s_node["min_hold_sec"].as<int>();
+        if (v < 0 || v > 600) { error_out = "scheduler.min_hold_sec must be in [0,600]"; return false; }
+        config.scheduler.min_hold_ms = static_cast<uint64_t>(v) * 1000;
+      }
+      if (s_node["cooldown_sec"]) {
+        const int v = s_node["cooldown_sec"].as<int>();
+        if (v < 0 || v > 600) { error_out = "scheduler.cooldown_sec must be in [0,600]"; return false; }
+        config.scheduler.cooldown_ms = static_cast<uint64_t>(v) * 1000;
+      }
+      if (s_node["max_adjustments_per_window"]) {
+        const int v = s_node["max_adjustments_per_window"].as<int>();
+        if (v < 0 || v > 10) { error_out = "scheduler.max_adjustments_per_window must be in [0,10]"; return false; }
+        config.scheduler.max_adjustments_per_window = v;
+      }
+      if (s_node["adjust_window_sec"]) {
+        const int v = s_node["adjust_window_sec"].as<int>();
+        if (v < 10 || v > 3600) { error_out = "scheduler.adjust_window_sec must be in [10,3600]"; return false; }
+        config.scheduler.adjust_window_ms = static_cast<uint64_t>(v) * 1000;
+      }
+    }
+
     // ---- Streams section ---------------------------------------------------
     const auto& streams_node = root["streams"];
     if (!streams_node || !streams_node.IsSequence()) {

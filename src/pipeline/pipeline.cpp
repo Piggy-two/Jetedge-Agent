@@ -45,12 +45,15 @@ bool Pipeline::build(const std::vector<StreamConfig>& stream_configs,
                      const OutputConfig& output_config,
                      const events::EventsConfig& events_config,
                      const llm::LlmConfig& llm_config,
-                     const RtspConfig& rtsp_config) {
+                     const RtspConfig& rtsp_config,
+                     const scheduler::SchedulerConfig& scheduler_config) {
   if (stream_configs.empty()) {
     LOG_ERROR("pipeline", "", "build", "PIPE001", "%s", "no streams configured");
     return false;
   }
   rtsp_config_ = rtsp_config;
+  stream_configs_ = stream_configs;  // Stage 9: priorities for tier mapping
+  scheduler_config_ = scheduler_config;
 
   // 1. Create pipeline bin.
   pipeline_ = gst_pipeline_new("jetedge-pipeline");
@@ -310,6 +313,26 @@ bool Pipeline::build(const std::vector<StreamConfig>& stream_configs,
     LOG_INFO("pipeline", "RTSP watchdog timer installed (1s tick)");
   }
 
+  // 8d. Stage 9: deterministic scheduler driver (sample → policy → intervals).
+  if (scheduler_config_.enable) {
+    scheduler_ = std::make_unique<scheduler::SchedulerPolicy>(scheduler_config_);
+    scheduler_intervals_.assign(stream_configs_.size(), 0);
+    scheduler_timer_id_ = g_timeout_add_seconds(scheduler_config_.sample_interval_sec,
+                                                on_scheduler_tick, this);
+    LOG_INFO("pipeline",
+             "scheduler enabled (tick=%ds cpu enter/exit=%.0f/%.0f%% temp "
+             "enter/exit=%.0f/%.0f°C critical=%.0f/%.0f°C hold=%llds "
+             "cooldown=%llds budget=%d/%llds)",
+             scheduler_config_.sample_interval_sec,
+             scheduler_config_.pressure_cpu_enter, scheduler_config_.pressure_cpu_exit,
+             scheduler_config_.thermal_temp_enter, scheduler_config_.thermal_temp_exit,
+             scheduler_config_.critical_temp_enter, scheduler_config_.critical_temp_exit,
+             static_cast<long long>(scheduler_config_.min_hold_ms / 1000),
+             static_cast<long long>(scheduler_config_.cooldown_ms / 1000),
+             scheduler_config_.max_adjustments_per_window,
+             static_cast<long long>(scheduler_config_.adjust_window_ms / 1000));
+  }
+
   // 8b. Stage 7: periodic DeepSeek system-metrics analysis.  Low frequency
   // by design — the aggregated payload is small and the call is async.
   if (llm_router_ && llm_config.deepseek_interval_sec > 0) {
@@ -472,7 +495,8 @@ void Pipeline::flush_stream_events(int stream_idx, uint64_t ts_ms) {
 gboolean Pipeline::on_periodic_report(gpointer user_data) {
   auto* self = static_cast<Pipeline*>(user_data);
   self->print_metrics_log();
-  self->log_rtsp_states();  // Stage 8: per-stream RTSP state report
+  self->log_rtsp_states();      // Stage 8: per-stream RTSP state report
+  self->log_scheduler_report();  // Stage 9: scheduler state report
   return G_SOURCE_CONTINUE;
 }
 
@@ -811,6 +835,74 @@ void Pipeline::log_rtsp_states() const {
   }
 }
 
+// ---- Stage 9: scheduler driver -------------------------------------------------
+
+gboolean Pipeline::on_scheduler_tick(gpointer user_data) {
+  auto* self = static_cast<Pipeline*>(user_data);
+  self->tick_scheduler();
+  return G_SOURCE_CONTINUE;
+}
+
+namespace {
+int tier_interval(const scheduler::PolicyTable& t, StreamPriority p) {
+  switch (p) {
+    case StreamPriority::kHigh:   return t.high;
+    case StreamPriority::kNormal: return t.normal;
+    case StreamPriority::kLow:    return t.low;
+  }
+  return 0;
+}
+}  // namespace
+
+void Pipeline::tick_scheduler() {
+  if (!scheduler_) {
+    return;
+  }
+  scheduler_last_sample_ = sys_sampler_.sample();
+  if (scheduler_->update(scheduler_last_sample_, mono_ms())) {
+    const auto& t = scheduler_->table();
+    LOG_INFO("scheduler",
+             "state=%s table=[high=%d normal=%d low=%d] cpu=%.1f%% mem=%.1f%% "
+             "temp=%.1f°C (%s)",
+             scheduler_state_str(scheduler_->state()), t.high, t.normal, t.low,
+             scheduler_last_sample_.cpu_pct, scheduler_last_sample_.mem_pct,
+             scheduler_last_sample_.temp_c, sys_sampler_.last_temp_zone().c_str());
+    apply_scheduler_intervals();
+  }
+}
+
+void Pipeline::apply_scheduler_intervals() {
+  if (!scheduler_ || !source_mgr_) {
+    return;
+  }
+  const auto& t = scheduler_->table();
+  for (size_t i = 0; i < stream_configs_.size() && i < scheduler_intervals_.size();
+       ++i) {
+    const int interval = tier_interval(t, stream_configs_[i].priority);
+    if (scheduler_intervals_[i] != interval) {
+      LOG_INFO("scheduler", "stream=%s priority=%s interval %d → %d",
+               stream_configs_[i].id.c_str(), priority_str(stream_configs_[i].priority),
+               scheduler_intervals_[i], interval);
+      source_mgr_->set_infer_interval(static_cast<int>(i), interval);
+      scheduler_intervals_[i] = interval;
+    }
+  }
+}
+
+void Pipeline::log_scheduler_report() const {
+  if (!scheduler_) {
+    return;
+  }
+  const auto& t = scheduler_->table();
+  LOG_INFO("metrics",
+           "scheduler state=%s table=[%d %d %d] cpu=%.1f%% mem=%.1f%% "
+           "temp=%.1f°C adjustments=%d/%d recovery_step=%d",
+           scheduler_state_str(scheduler_->state()), t.high, t.normal, t.low,
+           scheduler_last_sample_.cpu_pct, scheduler_last_sample_.mem_pct,
+           scheduler_last_sample_.temp_c, scheduler_->adjustments_in_window(),
+           scheduler_config_.max_adjustments_per_window, scheduler_->recovery_step());
+}
+
 int Pipeline::stream_index_from_object(GstObject* obj) const {
   if (!obj) {
     return -1;
@@ -943,6 +1035,10 @@ void Pipeline::release_resources() {
     g_source_remove(rtsp_watch_timer_id_);
     rtsp_watch_timer_id_ = 0;
   }
+  if (scheduler_timer_id_ != 0) {
+    g_source_remove(scheduler_timer_id_);
+    scheduler_timer_id_ = 0;
+  }
   // Stop the LLM worker threads before destroying the event engine — the
   // router may still be draining the queue.
   if (llm_router_) {
@@ -1008,6 +1104,7 @@ void Pipeline::release_resources() {
   event_writer_.reset();
   event_engine_.reset();
   llm_router_.reset();
+  scheduler_.reset();
 
   if (loop_) {
     g_main_loop_unref(loop_);

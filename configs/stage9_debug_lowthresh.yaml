@@ -1,0 +1,113 @@
+# JetEdge-Agent Stage 9 DEBUG configuration — same 4 RTSP streams as
+# streams_stage9.yaml but with deliberately LOW temperature thresholds so the
+# THERMAL / CRITICAL states can be exercised on the Jetson with REAL thermal
+# readings (ambient on this device is ~50-53°C).
+#
+# Not a production profile — acceptance evidence only: the scheduler must
+# enter CRITICAL on real readings, apply the {1,3,15} table, keep the
+# pipeline alive, and recover when the debug thresholds allow.
+#
+# Everything else is identical to streams_stage9.yaml.
+
+rtsp:
+  enable: true
+  live_source: true
+  transport: tcp
+  watch_timeout_sec: 5
+  first_frame_timeout_sec: 12
+  max_retries: 5
+  backoff_base_ms: 1000
+  backoff_max_ms: 15000
+  verify_sec: 5
+  min_fps: 1.0
+  rtspsrc_latency_ms: 500
+
+mux:
+  output_width: 1280
+  output_height: 720
+  batch_timeout_usec: 40000
+
+inference:
+  enable: true
+  config_file_path: configs/nvinfer_yolo11s_b4_fp16.txt
+  gie_unique_id: 1
+
+tracker:
+  enable: true
+  ll_lib_file: /opt/nvidia/deepstream/deepstream-7.1/lib/libnvds_nvmultiobjecttracker.so
+  ll_config_file: /opt/nvidia/deepstream/deepstream-7.1/samples/configs/deepstream-app/config_tracker_NvDCF_perf.yml
+  width: 960
+  height: 544
+  gpu_id: 0
+
+output:
+  jsonl_path: /home/seeed/projects/jetedge-agent/logs/stage9_debug_detections.jsonl
+  labels_file_path: /home/seeed/projects/jetedge-agent/configs/coco_labels.txt
+  fps_report_interval_sec: 5
+
+events:
+  enable: true
+  jsonl_path: /home/seeed/projects/jetedge-agent/logs/stage9_debug_events.jsonl
+  keyframe_dir: /home/seeed/projects/jetedge-agent/logs/keyframes
+  max_keyframes: 150
+  jpeg_quality: 85
+  disappear_grace_frames: 15
+  count_threshold: 3
+  count_hysteresis: 1
+  classes: [0, 1, 2, 3, 5, 7]
+
+llm:
+  enable: false
+  keyframe_dir: /home/seeed/projects/jetedge-agent/logs/keyframes
+  cloud_output_path: /home/seeed/projects/jetedge-agent/logs/stage9_debug_analysis.jsonl
+  deepseek_interval_sec: 60
+
+# DEBUG thresholds — ambient on this Jetson is ~50-53°C, so the scheduler
+# enters THERMAL immediately and CRITICAL once inference + burners push the
+# temperature above 56°C; the low exit thresholds (50°C) let it recover when
+# the load stops and the device cools below 50°C.
+#
+# TUNING RULE (measured 2026-08-02, run C/D): the hysteresis gap must EXCEED
+# the device thermal jitter (~0.5°C on gpu-thermal under load).  With
+# enter=56.0 / exit=55.6 the gap (0.4°C) is smaller than the jitter and the
+# system flickers CRITICAL⇄RECOVERY (each transition itself threshold-correct:
+# entry is immediate by safety design, exit waits min_hold).  Production
+# thresholds (75/70, 82/76 — 5-6°C gaps) are immune; this file uses 56/50.
+scheduler:
+  enable: true
+  sample_interval_sec: 2
+  pressure_cpu_enter: 70.0
+  pressure_cpu_exit: 50.0
+  thermal_temp_enter: 46.0
+  thermal_temp_exit: 43.0
+  critical_temp_enter: 56.0
+  critical_temp_exit: 50.0
+  min_hold_sec: 10
+  cooldown_sec: 20
+  max_adjustments_per_window: 2
+  adjust_window_sec: 120
+
+streams:
+  - id: cam1
+    type: rtsp
+    uri: rtsp://127.0.0.1:8554/cam1
+    priority: high
+    expected_fps: 30
+
+  - id: cam2
+    type: rtsp
+    uri: rtsp://127.0.0.1:8554/cam2
+    priority: normal
+    expected_fps: 30
+
+  - id: cam3
+    type: rtsp
+    uri: rtsp://127.0.0.1:8554/cam3
+    priority: normal
+    expected_fps: 30
+
+  - id: cam4
+    type: rtsp
+    uri: rtsp://127.0.0.1:8554/cam4
+    priority: low
+    expected_fps: 30
