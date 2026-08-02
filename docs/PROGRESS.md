@@ -12,6 +12,7 @@
 - **阶段 5（四路检测 + Tracker + 结构化 JSONL + per-stream Metrics）：已完成 ✓（2026-08-01）**
 - **阶段 6（事件系统、事件去重和关键帧抽取）：已完成 ✓（2026-08-01）**
 - **阶段 7（Qwen + DeepSeek 异步分析）：已完成 ✓（2026-08-01）**——mock/故障注入/线上真实 API 三层验收全部通过；线上验收修复 Qwen markdown 围栏解析缺陷并切换模型（qwen3.6-flash / deepseek-v4-flash）
+- **阶段 8（RTSP 故障隔离与恢复）：已完成 ✓（2026-08-02）**——4 路 RTSP 冒烟（四路 10s 内 RUNNING、200s 零重连零失败）+ 10 轮 cam3 停/恢复故障注入（cam1/2/4 全程 0 stall / 0 reconnect / 0 failure，cam3 每轮自动恢复）+ FAILED 路径（6 次真实连续失败后重试停止）；本会话定位并修复 2 个缺陷：**watchdog tick 时间戳下溢假 stall**（now 循环开头捕获、前一流重建耗时后无符号下溢——cam4 每轮必误报）与**垂死 rtspsrc 陈旧错误重复计数**（健康流误 FAILED，元素身份校验修复）；ctest 4/4、事件 JSONL 8419 行 0 非法、RSS 收敛、EOS/Ctrl-C 干净。详见 `docs/stage8_rtsp.md`
 
 > **阶段编号变更**：旧 `implementation_plan.md` 的阶段 2（四路 streammux）和阶段 3（TensorRT+Tracker+四路检测）已被 `README.md` 新方案重新组织。新方案 Stage 4 只做单路 TensorRT+nvinfer（不含 Tracker），四路检测和 Tracker 归入 Stage 5。
 
@@ -140,9 +141,36 @@
 
 详细报告：`docs/stage7_llm.md`。
 
+## 阶段 8 验收记录（2026-08-02）
+
+### 代码与配置
+
+- `reconnect_policy`（纯逻辑状态机 + 37 checks 单测）、`RtspConfig`、SourceBin rtsp 分支与 `rebuild_source`（sink_<idx> 映射稳定）、pipeline 1s watchdog + bus 错误分流 + FPS 验证窗口、`scripts/rtsp_serve.sh` + `configs/streams_stage8.yaml`
+- 测试环境：MediaMTX v1.19.3（`~/jetedge-rtsp/`，用户目录无系统包）
+
+### 实测结果（全部 Jetson 实机）
+
+| 检查项 | 结果 |
+|---|---|
+| ctest | 4/4 PASS（含 test_reconnect_policy 37 checks）|
+| 4 路冒烟（200s）| 四路 ~10s 内 RUNNING；0 重连 / 0 失败；每路 ~29.3 fps；事件 6773 行 0 非法；SIGINT 干净 |
+| 10 轮 cam3 故障注入 | cam3 每轮 stall→1 失败→恢复→failures 归零（10/10）；**cam1/2/4 全程 0 stall / 0 reconnect / 0 failure**（460s）|
+| FAILED 路径 | 6 次真实连续失败 → FAILED → 重试停止；发布端恢复后不自动复活（按设计）|
+| 陈旧错误 | 元素身份校验 19 次正确忽略（早期运行）；真实 404 正确计数 |
+| 事件 JSONL | 8419 行逐行校验 0 非法 |
+| RSS / 退出 | 616.4 → 650.5 MiB 收敛；EOS/Ctrl-C 干净 |
+
+### 本会话修复的缺陷
+
+1. **watchdog 下溢假 stall（R1）**：`now` 在 tick 循环开头捕获一次，前一流（cam3）重建耗时 ~100ms 后，cam4 的检查用旧 `now` 减新的 `last` → 无符号下溢 → 每轮必假 stall。修复：`now` 移入每流循环内 + `last <= now` 保护。证据：插桩日志 `last=10957559 now=10957523` + nvstreammux 调试证实 source 3 帧全程 30fps（假 stall）。
+2. **陈旧错误重复计数（R2）**：垂死 rtspsrc 的 2~4 条 bus ERROR 在重建后到达（不在 pending 窗口）→ 每条计一次失败 → 健康流 6 次失败误 FAILED。修复：`SourceBin::is_chain_element` 元素身份校验，旧元素错误忽略。
+
+详细报告：`docs/stage8_rtsp.md`。
+
 ## 后续阶段
 
 - ~~Stage 7：Qwen + DeepSeek API、异步队列和降级策略~~ → 已完成，见 `docs/stage7_llm.md`
-- RTSP 故障恢复与动态调度
+- ~~Stage 8：RTSP 故障隔离与恢复~~ → 已完成，见 `docs/stage8_rtsp.md`
+- 确定性 C++ 动态调度器（NORMAL | PRESSURE | THERMAL | CRITICAL | RECOVERY，含自适应推理间隔）
 - ftrace 和 CPU Affinity 分析
 - INT8 PTQ 与精度回归

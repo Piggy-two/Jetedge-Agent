@@ -1,0 +1,99 @@
+# JetEdge-Agent Stage 8 configuration — four RTSP streams with fault
+# isolation and automatic reconnect.
+#
+# Test sources: local MediaMTX + ffmpeg publish loops (scripts/rtsp_serve.sh).
+#   rtsp://127.0.0.1:8554/cam1..cam4
+#
+# Reconnect behavior (per stream, deterministic C++ state machine):
+#   OFFLINE → CONNECTING → RUNNING → DEGRADED → RECONNECTING → FAILED
+#   backoff 1s → 2s → 4s → 8s → 15s (cap); after 5 consecutive failures the
+#   stream enters FAILED and automatic retries stop (no retry storms).
+# A failed/reconnecting stream never affects the other streams.
+
+rtsp:
+  enable: true
+  live_source: true          # nvstreammux live-source for all-RTSP configs
+  transport: tcp             # rtspsrc over TCP: avoids UDP socket-buffer
+                             # overflow (net.core.rmem_max=212KB, no admin)
+  watch_timeout_sec: 5       # no frames for 5s → DEGRADED → RECONNECTING
+  first_frame_timeout_sec: 12  # initial window for the FIRST frame after a
+                               # connect (long-GOP live streams connect mid-GOP:
+                               # sample_720p.mp4 GOP = 8.33 s; tearing down
+                               # before the first keyframe just restarts the wait)
+  max_retries: 5             # consecutive failures before FAILED
+  backoff_base_ms: 1000
+  backoff_max_ms: 15000
+  verify_sec: 5              # post-reconnect FPS verification window
+  min_fps: 1.0               # reconnect succeeds only if input FPS >= this
+  rtspsrc_latency_ms: 500
+
+mux:
+  output_width: 1280
+  output_height: 720
+  batch_timeout_usec: 40000   # 40ms timeout for batch formation
+
+inference:
+  enable: true
+  config_file_path: configs/nvinfer_yolo11s_b4_fp16.txt
+  gie_unique_id: 1
+
+tracker:
+  enable: true
+  ll_lib_file: /opt/nvidia/deepstream/deepstream-7.1/lib/libnvds_nvmultiobjecttracker.so
+  ll_config_file: /opt/nvidia/deepstream/deepstream-7.1/samples/configs/deepstream-app/config_tracker_NvDCF_perf.yml
+  width: 960
+  height: 544
+  gpu_id: 0
+
+output:
+  jsonl_path: /home/seeed/projects/jetedge-agent/logs/stage8_detections.jsonl
+  labels_file_path: /home/seeed/projects/jetedge-agent/configs/coco_labels.txt
+  fps_report_interval_sec: 5
+
+events:
+  enable: true
+  jsonl_path: /home/seeed/projects/jetedge-agent/logs/stage8_events.jsonl
+  keyframe_dir: /home/seeed/projects/jetedge-agent/logs/keyframes
+  max_keyframes: 150
+  jpeg_quality: 85
+  disappear_grace_frames: 15
+  count_threshold: 3
+  count_hysteresis: 1
+  classes: [0, 1, 2, 3, 5, 7]
+  zones:
+    - name: road
+      stream_id: cam1
+      rect: [0, 250, 1280, 470]
+
+# LLM analysis stays DISABLED in this stage — Stage 7 acceptance is frozen;
+# Stage 8 focuses on RTSP fault isolation and recovery only.
+llm:
+  enable: false
+  keyframe_dir: /home/seeed/projects/jetedge-agent/logs/keyframes
+  cloud_output_path: /home/seeed/projects/jetedge-agent/logs/stage8_analysis.jsonl
+  deepseek_interval_sec: 60
+
+streams:
+  - id: cam1
+    type: rtsp
+    uri: rtsp://127.0.0.1:8554/cam1
+    priority: high
+    expected_fps: 30
+
+  - id: cam2
+    type: rtsp
+    uri: rtsp://127.0.0.1:8554/cam2
+    priority: normal
+    expected_fps: 30
+
+  - id: cam3
+    type: rtsp
+    uri: rtsp://127.0.0.1:8554/cam3
+    priority: normal
+    expected_fps: 30
+
+  - id: cam4
+    type: rtsp
+    uri: rtsp://127.0.0.1:8554/cam4
+    priority: low
+    expected_fps: 30

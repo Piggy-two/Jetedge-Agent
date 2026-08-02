@@ -39,6 +39,7 @@ set(JETEDGE_SOURCES
   src/llm/prompt_manager.cpp
   src/metrics/metrics_registry.cpp
   src/pipeline/pipeline.cpp
+  src/pipeline/reconnect_policy.cpp
   src/pipeline/source_bin.cpp
   src/pipeline/source_manager.cpp
 )
@@ -64,6 +65,7 @@ set(JETEDGE_HEADERS
   include/jetedge/llm/request_queue.h
   include/jetedge/metrics/metrics_registry.h
   include/jetedge/pipeline/pipeline.h
+  include/jetedge/pipeline/reconnect_policy.h
   include/jetedge/pipeline/source_bin.h
   include/jetedge/pipeline/source_manager.h
   include/jetedge/pipeline/stream_config.h
@@ -119,7 +121,13 @@ target_include_directories(test_prompt_manager PRIVATE ${CMAKE_SOURCE_DIR}/inclu
 target_link_libraries(test_prompt_manager PRIVATE Threads::Threads
                       PkgConfig::JSONCPP)
 
+add_executable(test_reconnect_policy tests/test_reconnect_policy.cpp
+               src/pipeline/reconnect_policy.cpp)
+target_include_directories(test_reconnect_policy PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(test_reconnect_policy PRIVATE Threads::Threads)
+
 enable_testing()
 add_test(NAME event_engine COMMAND test_event_engine)
 add_test(NAME circuit_breaker COMMAND test_circuit_breaker)
 add_test(NAME prompt_manager COMMAND test_prompt_manager)
+add_test(NAME reconnect_policy COMMAND test_reconnect_policy)

@@ -22,6 +22,7 @@ struct StreamsConfig {
   pipeline::OutputConfig output;
   events::EventsConfig events;
   llm::LlmConfig llm;                 // Stage 7: async cloud analysis
+  pipeline::RtspConfig rtsp;          // Stage 8: RTSP source + reconnect
   std::vector<pipeline::StreamConfig> streams;
 };
 

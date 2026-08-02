@@ -1,6 +1,10 @@
-// SourceBin implementation.
+// SourceBin implementation — file and RTSP (Stage 8) source chains.
 
 #include "jetedge/pipeline/source_bin.h"
+
+#include <ctime>
+
+#include <gst/rtsp/gstrtspconnection.h>
 
 #include "jetedge/common/logging.h"
 
@@ -14,13 +18,19 @@ bool ends_with(const std::string& str, const std::string& suffix) {
   return std::equal(suffix.rbegin(), suffix.rend(), str.rbegin());
 }
 
+uint64_t mono_ms() {
+  struct timespec ts;
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  return static_cast<uint64_t>(ts.tv_sec) * 1000ULL +
+         static_cast<uint64_t>(ts.tv_nsec / 1000000);
+}
+
 }  // namespace
 
-SourceBin::SourceBin(const StreamConfig& config) : config_(config) {}
+SourceBin::SourceBin(const StreamConfig& config, const RtspConfig& rtsp_config)
+    : config_(config), rtsp_config_(rtsp_config) {}
 
 SourceBin::~SourceBin() {
-  // Elements are owned by the parent pipeline bin — no explicit unref needed.
-  // The probe will be detached when the pad is released.
   if (decoder_src_pad_) {
     gst_object_unref(decoder_src_pad_);
     decoder_src_pad_ = nullptr;
@@ -28,79 +38,157 @@ SourceBin::~SourceBin() {
 }
 
 bool SourceBin::build(GstElement* pipeline) {
-  LOG_INFO("source_bin", "building source: id=%s uri=%s", config_.id.c_str(), config_.uri.c_str());
+  LOG_INFO("source_bin", "building source: id=%s type=%s uri=%s",
+           config_.id.c_str(), config_.type.c_str(), config_.uri.c_str());
 
-  // Create elements with stream-specific names.
   const std::string prefix = "src-" + config_.id;
-  filesrc_ = gst_element_factory_make("filesrc", (prefix + "-filesrc").c_str());
-  parser_  = gst_element_factory_make("h264parse", (prefix + "-parser").c_str());
-  decoder_ = gst_element_factory_make("nvv4l2decoder", (prefix + "-decoder").c_str());
 
-  if (!filesrc_ || !parser_ || !decoder_) {
-    LOG_ERROR("source_bin", config_.id.c_str(), "build", "SRC001",
-              "%s", "failed to create source elements");
-    return false;
-  }
-
-  g_object_set(G_OBJECT(filesrc_), "location", config_.uri.c_str(), nullptr);
-
-  // Check if we need a demuxer.
-  const bool needs_demux = ends_with(config_.uri, ".mp4") ||
-                           ends_with(config_.uri, ".mov") ||
-                           ends_with(config_.uri, ".mkv") ||
-                           ends_with(config_.uri, ".avi");
-
-  // Add elements to pipeline.
-  if (needs_demux) {
-    demux_ = gst_element_factory_make("qtdemux", (prefix + "-demux").c_str());
-    if (!demux_) {
-      LOG_ERROR("source_bin", config_.id.c_str(), "build", "SRC002",
-                "%s", "failed to create qtdemux");
+  if (is_rtsp()) {
+    // ---- RTSP chain: rtspsrc → rtph264depay → h264parse → nvv4l2decoder ---
+    rtsp_src_ = gst_element_factory_make("rtspsrc", (prefix + "-rtspsrc").c_str());
+    depay_    = gst_element_factory_make("rtph264depay", (prefix + "-depay").c_str());
+    parser_   = gst_element_factory_make("h264parse", (prefix + "-parser").c_str());
+    decoder_  = gst_element_factory_make("nvv4l2decoder", (prefix + "-decoder").c_str());
+    if (!rtsp_src_ || !depay_ || !parser_ || !decoder_) {
+      LOG_ERROR("source_bin", config_.id.c_str(), "build", "SRC001",
+                "%s", "failed to create rtsp source elements");
       return false;
     }
-    gst_bin_add_many(GST_BIN(pipeline), filesrc_, demux_, parser_, decoder_, nullptr);
-  } else {
-    gst_bin_add_many(GST_BIN(pipeline), filesrc_, parser_, decoder_, nullptr);
-  }
 
-  // ---- Link ---------------------------------------------------------------
-  if (needs_demux) {
-    // filesrc → qtdemux
-    if (!gst_element_link(filesrc_, demux_)) {
-      LOG_ERROR("source_bin", config_.id.c_str(), "build", "LINK010",
-                "%s", "failed to link filesrc → qtdemux");
-      return false;
+    g_object_set(G_OBJECT(rtsp_src_),
+                 "location", config_.uri.c_str(),
+                 "latency", rtsp_config_.rtspsrc_latency_ms,
+                 "drop-on-latency", TRUE,  // drop stale frames on resync
+                 nullptr);
+
+    // Transport selection (Stage 8).  "auto" keeps the rtspsrc default.
+    if (rtsp_config_.transport == "tcp") {
+      g_object_set(G_OBJECT(rtsp_src_), "protocols", GST_RTSP_LOWER_TRANS_TCP, nullptr);
+      LOG_INFO("source_bin", "%s: rtspsrc transport=tcp", config_.id.c_str());
+    } else if (rtsp_config_.transport == "udp") {
+      g_object_set(G_OBJECT(rtsp_src_), "protocols", GST_RTSP_LOWER_TRANS_UDP, nullptr);
+      LOG_INFO("source_bin", "%s: rtspsrc transport=udp", config_.id.c_str());
     }
-    // h264parse → decoder (static)
-    if (!gst_element_link(parser_, decoder_)) {
+
+    gst_bin_add_many(GST_BIN(pipeline), rtsp_src_, depay_, parser_, decoder_, nullptr);
+
+    // Static: rtph264depay → h264parse → decoder.
+    if (!gst_element_link_many(depay_, parser_, decoder_, nullptr)) {
       LOG_ERROR("source_bin", config_.id.c_str(), "build", "LINK011",
-                "%s", "failed to link parser → decoder");
+                "%s", "failed to link rtph264depay → h264parse → decoder");
       return false;
     }
-    // qtdemux dynamic pad → parser (via callback)
-    g_signal_connect(demux_, "pad-added", G_CALLBACK(on_demux_pad_added), parser_);
+    // Dynamic: rtspsrc → rtph264depay (H.264 video stream only).
+    g_signal_connect(rtsp_src_, "pad-added", G_CALLBACK(on_rtsp_pad_added), depay_);
   } else {
-    // filesrc → h264parse → decoder (all static)
-    if (!gst_element_link_many(filesrc_, parser_, decoder_, nullptr)) {
-      LOG_ERROR("source_bin", config_.id.c_str(), "build", "LINK012",
-                "%s", "failed to link filesrc → parser → decoder");
+    // ---- File chain: filesrc → [qtdemux] → h264parse → nvv4l2decoder -------
+    filesrc_ = gst_element_factory_make("filesrc", (prefix + "-filesrc").c_str());
+    parser_  = gst_element_factory_make("h264parse", (prefix + "-parser").c_str());
+    decoder_ = gst_element_factory_make("nvv4l2decoder", (prefix + "-decoder").c_str());
+    if (!filesrc_ || !parser_ || !decoder_) {
+      LOG_ERROR("source_bin", config_.id.c_str(), "build", "SRC001",
+                "%s", "failed to create source elements");
       return false;
+    }
+
+    g_object_set(G_OBJECT(filesrc_), "location", config_.uri.c_str(), nullptr);
+
+    // Check if we need a demuxer.
+    const bool needs_demux = ends_with(config_.uri, ".mp4") ||
+                             ends_with(config_.uri, ".mov") ||
+                             ends_with(config_.uri, ".mkv") ||
+                             ends_with(config_.uri, ".avi");
+
+    if (needs_demux) {
+      demux_ = gst_element_factory_make("qtdemux", (prefix + "-demux").c_str());
+      if (!demux_) {
+        LOG_ERROR("source_bin", config_.id.c_str(), "build", "SRC002",
+                  "%s", "failed to create qtdemux");
+        return false;
+      }
+      gst_bin_add_many(GST_BIN(pipeline), filesrc_, demux_, parser_, decoder_, nullptr);
+
+      if (!gst_element_link(filesrc_, demux_)) {
+        LOG_ERROR("source_bin", config_.id.c_str(), "build", "LINK010",
+                  "%s", "failed to link filesrc → qtdemux");
+        return false;
+      }
+      if (!gst_element_link(parser_, decoder_)) {
+        LOG_ERROR("source_bin", config_.id.c_str(), "build", "LINK011",
+                  "%s", "failed to link parser → decoder");
+        return false;
+      }
+      g_signal_connect(demux_, "pad-added", G_CALLBACK(on_demux_pad_added), parser_);
+    } else {
+      gst_bin_add_many(GST_BIN(pipeline), filesrc_, parser_, decoder_, nullptr);
+      if (!gst_element_link_many(filesrc_, parser_, decoder_, nullptr)) {
+        LOG_ERROR("source_bin", config_.id.c_str(), "build", "LINK012",
+                  "%s", "failed to link filesrc → parser → decoder");
+        return false;
+      }
     }
   }
 
-  // ---- Install frame-counting probe on decoder src pad --------------------
+  // ---- Install frame probe on decoder src pad ------------------------------
   decoder_src_pad_ = gst_element_get_static_pad(decoder_, "src");
   if (!decoder_src_pad_) {
     LOG_ERROR("source_bin", config_.id.c_str(), "build", "PAD010",
               "%s", "failed to get decoder src pad");
     return false;
   }
-  gst_pad_add_probe(decoder_src_pad_, GST_PAD_PROBE_TYPE_BUFFER,
-                    on_frame_probe, this, nullptr);
+  frame_probe_id_ = gst_pad_add_probe(decoder_src_pad_, GST_PAD_PROBE_TYPE_BUFFER,
+                                      on_frame_probe, this, nullptr);
 
-  LOG_INFO("source_bin", "source %s built successfully (demux=%d)",
-           config_.id.c_str(), needs_demux ? 1 : 0);
+  LOG_INFO("source_bin", "source %s built successfully (type=%s)",
+           config_.id.c_str(), config_.type.c_str());
   return true;
+}
+
+void SourceBin::teardown(GstElement* pipeline) {
+  if (frame_probe_id_ != 0 && decoder_src_pad_) {
+    gst_pad_remove_probe(decoder_src_pad_, frame_probe_id_);
+    frame_probe_id_ = 0;
+  }
+  if (decoder_src_pad_) {
+    gst_object_unref(decoder_src_pad_);
+    decoder_src_pad_ = nullptr;
+  }
+
+  // Collect the elements we own (some may be null depending on the branch).
+  GstElement* elements[] = {rtsp_src_, depay_, filesrc_, demux_, parser_, decoder_};
+  GstElement* to_remove[7] = {nullptr, nullptr, nullptr, nullptr, nullptr,
+                              nullptr, nullptr};
+  int n = 0;
+  for (GstElement* e : elements) {
+    if (e) {
+      gst_element_set_state(e, GST_STATE_NULL);
+      to_remove[n++] = e;
+    }
+  }
+  to_remove[n] = nullptr;
+  if (n > 0) {
+    gst_bin_remove_many(GST_BIN(pipeline), to_remove[0], to_remove[1],
+                        to_remove[2], to_remove[3], to_remove[4],
+                        to_remove[5], nullptr);
+  }
+
+  rtsp_src_ = nullptr;
+  depay_ = nullptr;
+  filesrc_ = nullptr;
+  demux_ = nullptr;
+  parser_ = nullptr;
+  decoder_ = nullptr;
+  frame_count_.store(0);
+  last_frame_ts_ms_.store(0);
+}
+
+void SourceBin::sync_state_with_parent() {
+  GstElement* elements[] = {rtsp_src_, depay_, filesrc_, demux_, parser_, decoder_};
+  for (GstElement* e : elements) {
+    if (e) {
+      gst_element_sync_state_with_parent(e);
+    }
+  }
 }
 
 // ---- Static callbacks -------------------------------------------------------
@@ -111,11 +199,13 @@ GstPadProbeReturn SourceBin::on_frame_probe(GstPad* /*pad*/, GstPadProbeInfo* in
   // Only count buffers (not events like EOS).
   if (info->type & GST_PAD_PROBE_TYPE_BUFFER) {
     self->frame_count_.fetch_add(1, std::memory_order_relaxed);
+    self->last_frame_ts_ms_.store(mono_ms(), std::memory_order_relaxed);
   }
   return GST_PAD_PROBE_OK;
 }
 
-void SourceBin::on_demux_pad_added(GstElement* /*src*/, GstPad* new_pad, gpointer user_data) {
+void SourceBin::on_demux_pad_added(GstElement* /*src*/, GstPad* new_pad,
+                                   gpointer user_data) {
   GstElement* parser = static_cast<GstElement*>(user_data);
 
   GstCaps* caps = gst_pad_get_current_caps(new_pad);
@@ -130,6 +220,42 @@ void SourceBin::on_demux_pad_added(GstElement* /*src*/, GstPad* new_pad, gpointe
     if (sink_pad) {
       gst_pad_link(new_pad, sink_pad);
       gst_object_unref(sink_pad);
+    }
+  }
+
+  gst_caps_unref(caps);
+}
+
+void SourceBin::on_rtsp_pad_added(GstElement* src, GstPad* new_pad,
+                                  gpointer user_data) {
+  GstElement* depay = static_cast<GstElement*>(user_data);
+
+  GstCaps* caps = gst_pad_get_current_caps(new_pad);
+  if (!caps) caps = gst_pad_query_caps(new_pad, nullptr);
+  if (!caps) return;
+
+  GstStructure* structure = gst_caps_get_structure(caps, 0);
+  const gchar* name = structure ? gst_structure_get_name(structure) : nullptr;
+  const gchar* encoding =
+      structure ? gst_structure_get_string(structure, "encoding-name") : nullptr;
+
+  // rtspsrc pads carry RTP caps (application/x-rtp, encoding-name=H264),
+  // not video/x-h264 — check the structure name, not the "video/" prefix.
+  if (name && g_str_equal(name, "application/x-rtp")) {
+    // Only H.264 RTSP payloads are supported in this stage.
+    if (encoding && g_ascii_strcasecmp(encoding, "H264") == 0) {
+      GstPad* sink_pad = gst_element_get_static_pad(depay, "sink");
+      if (sink_pad) {
+        if (gst_pad_link(new_pad, sink_pad) != GST_PAD_LINK_OK) {
+          LOG_ERROR("source_bin", "", "pad-added", "LINK013",
+                    "%s", "failed to link rtspsrc pad → rtph264depay");
+        }
+        gst_object_unref(sink_pad);
+      }
+    } else {
+      LOG_WARN("source_bin", "rtsp pad %s: unsupported encoding '%s' (H264 only) "
+               "— leaving unlinked",
+               GST_OBJECT_NAME(new_pad), encoding ? encoding : "?");
     }
   }
 

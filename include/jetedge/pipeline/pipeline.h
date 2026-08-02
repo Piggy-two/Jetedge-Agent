@@ -20,6 +20,7 @@
 #include "jetedge/llm/llm_config.h"
 #include "jetedge/llm/llm_router.h"
 #include "jetedge/metrics/metrics_registry.h"
+#include "jetedge/pipeline/reconnect_policy.h"
 #include "jetedge/pipeline/source_manager.h"
 #include "jetedge/pipeline/stream_config.h"
 
@@ -46,13 +47,15 @@ class Pipeline {
   // output_config: JSONL output + labels file settings.
   // events_config: rule events + keyframe extraction (Stage 6).
   // llm_config: async cloud analysis routing (Stage 7).
+  // rtsp_config: RTSP source + reconnect settings (Stage 8).
   bool build(const std::vector<StreamConfig>& stream_configs,
              const MuxConfig& mux_config,
              const inference::InferenceConfig& infer_config = {},
              const TrackerConfig& tracker_config = {},
              const OutputConfig& output_config = {},
              const events::EventsConfig& events_config = {},
-             const llm::LlmConfig& llm_config = {});
+             const llm::LlmConfig& llm_config = {},
+             const RtspConfig& rtsp_config = {});
 
   // Run the GLib main loop (blocking).  Exits on EOS, error, or signal.
   void run();
@@ -66,16 +69,48 @@ class Pipeline {
   // Per-stream metrics summary (Stage 5).
   std::vector<metrics::MetricsRegistry::StreamSummary> metrics_snapshot() const;
 
+  // ---- Stage 8 RTSP reconnect driver ---------------------------------------
+  // Per-stream reconnect bookkeeping, all touched only from the GLib main
+  // loop thread (bus watch + watchdog timer).
+  struct RtspWatch {
+    explicit RtspWatch(const ReconnectPolicy::Params& params) : policy(params) {}
+    ReconnectPolicy policy;
+    uint64_t connect_ms = 0;          // last mark_connect (monotonic ms)
+    uint64_t verify_start_ms = 0;     // FPS verification window open time
+    uint64_t verify_start_count = 0;  // frame count at window open
+    uint64_t deadline_ms = 0;         // reconnect deadline (kReconnecting)
+    uint64_t state_since_ms = 0;      // monotonic ms since current state
+    StreamState seen_state = StreamState::kOffline;
+    bool verifying = false;           // FPS window currently open
+  };
+
  private:
   static gboolean on_bus_message(GstBus* bus, GstMessage* msg, gpointer user_data);
   static gboolean on_periodic_report(gpointer user_data);
   static gboolean on_llm_metrics_report(gpointer user_data);
+  static gboolean on_rtsp_watch(gpointer user_data);
   static GstPadProbeReturn on_stream_eos(GstPad* pad, GstPadProbeInfo* info,
                                          gpointer user_data);
   void print_metrics_log() const;
   std::string build_metrics_json() const;
   void flush_stream_events(int stream_idx, uint64_t ts_ms);
   void release_resources();
+
+  // Install (or reinstall after a rebuild) per-stream EOS probes → disappearance
+  // flush.  Probes are removed from stale pads first; pads that were destroyed
+  // by a teardown must already have their probes removed before calling this.
+  void install_eos_probes();
+
+  // 1s watchdog: detect stalls, run backoff deadlines, verify post-reconnect
+  // input FPS (needs ≥ min_fps over the verify_sec window).
+  void tick_rtsp_watch();
+  void schedule_reconnect(size_t idx, const char* reason);
+  void do_reconnect(size_t idx);
+  void log_rtsp_states() const;
+
+  // Map a GStreamer object (error source) to a stream index by walking up its
+  // parent chain and matching our "src-<id>-*" element names.  -1 = not ours.
+  int stream_index_from_object(GstObject* obj) const;
 
   GstElement* pipeline_ = nullptr;
   GstElement* sink_ = nullptr;
@@ -90,6 +125,7 @@ class Pipeline {
   guint event_probe_id_ = 0;   // on tracker (or nvinfer) src pad (Stage 6)
   guint report_timer_id_ = 0;  // periodic metrics report
   guint llm_metrics_timer_id_ = 0;  // periodic DeepSeek analysis (Stage 7)
+  guint rtsp_watch_timer_id_ = 0;  // Stage 8: 1s RTSP stall/reconnect watchdog
   GMainLoop* loop_ = nullptr;
   guint bus_watch_id_ = 0;
 
@@ -104,6 +140,8 @@ class Pipeline {
   std::unique_ptr<events::KeyframeWriter> keyframe_writer_;
   std::unique_ptr<llm::LlmRouter> llm_router_;  // Stage 7 async cloud analysis
   std::vector<std::string> class_names_;        // for LLM prompt building
+  RtspConfig rtsp_config_;                      // Stage 8: RTSP settings
+  std::vector<RtspWatch> rtsp_watch_;           // one entry per source
 };
 
 }  // namespace pipeline

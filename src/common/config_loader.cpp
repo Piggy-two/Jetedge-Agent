@@ -247,6 +247,67 @@ bool load_streams_config(const std::string& path, StreamsConfig& config, std::st
       }
     }
 
+    // ---- RTSP section (optional, Stage 8) ----------------------------------
+    if (root["rtsp"]) {
+      const auto& r_node = root["rtsp"];
+      if (r_node["enable"])
+        config.rtsp.enable = r_node["enable"].as<bool>();
+      if (r_node["live_source"])
+        config.rtsp.live_source = r_node["live_source"].as<bool>();
+      if (r_node["watch_timeout_sec"]) {
+        const int v = r_node["watch_timeout_sec"].as<int>();
+        if (v < 1 || v > 60) { error_out = "rtsp.watch_timeout_sec must be in [1,60]"; return false; }
+        config.rtsp.watch_timeout_sec = v;
+      }
+      if (r_node["first_frame_timeout_sec"]) {
+        const int v = r_node["first_frame_timeout_sec"].as<int>();
+        if (v < 1 || v > 120) { error_out = "rtsp.first_frame_timeout_sec must be in [1,120]"; return false; }
+        config.rtsp.first_frame_timeout_sec = v;
+      }
+      if (r_node["max_retries"]) {
+        const int v = r_node["max_retries"].as<int>();
+        if (v < 1 || v > 20) { error_out = "rtsp.max_retries must be in [1,20]"; return false; }
+        config.rtsp.max_retries = v;
+      }
+      if (r_node["backoff_base_ms"]) {
+        const int v = r_node["backoff_base_ms"].as<int>();
+        if (v < 100 || v > 60000) { error_out = "rtsp.backoff_base_ms must be in [100,60000]"; return false; }
+        config.rtsp.backoff_base_ms = v;
+      }
+      if (r_node["backoff_max_ms"]) {
+        const int v = r_node["backoff_max_ms"].as<int>();
+        if (v < 100 || v > 600000) { error_out = "rtsp.backoff_max_ms must be in [100,600000]"; return false; }
+        config.rtsp.backoff_max_ms = v;
+      }
+      if (config.rtsp.backoff_max_ms < config.rtsp.backoff_base_ms) {
+        error_out = "rtsp.backoff_max_ms must be >= rtsp.backoff_base_ms";
+        return false;
+      }
+      if (r_node["verify_sec"]) {
+        const int v = r_node["verify_sec"].as<int>();
+        if (v < 1 || v > 60) { error_out = "rtsp.verify_sec must be in [1,60]"; return false; }
+        config.rtsp.verify_sec = v;
+      }
+      if (r_node["min_fps"]) {
+        const double v = r_node["min_fps"].as<double>();
+        if (v <= 0.0 || v > 60.0) { error_out = "rtsp.min_fps must be in (0,60]"; return false; }
+        config.rtsp.min_fps = v;
+      }
+      if (r_node["rtspsrc_latency_ms"]) {
+        const int v = r_node["rtspsrc_latency_ms"].as<int>();
+        if (v < 0 || v > 10000) { error_out = "rtsp.rtspsrc_latency_ms must be in [0,10000]"; return false; }
+        config.rtsp.rtspsrc_latency_ms = v;
+      }
+      if (r_node["transport"]) {
+        const std::string t = r_node["transport"].as<std::string>();
+        if (t != "tcp" && t != "udp" && t != "auto") {
+          error_out = "rtsp.transport must be 'tcp', 'udp' or 'auto'";
+          return false;
+        }
+        config.rtsp.transport = t;
+      }
+    }
+
     // ---- Streams section ---------------------------------------------------
     const auto& streams_node = root["streams"];
     if (!streams_node || !streams_node.IsSequence()) {
@@ -263,6 +324,14 @@ bool load_streams_config(const std::string& path, StreamsConfig& config, std::st
       sc.id   = s["id"].as<std::string>();
       sc.uri  = s["uri"].as<std::string>();
       sc.type = s["type"] ? s["type"].as<std::string>() : "file";
+      if (sc.type != "file" && sc.type != "rtsp") {
+        error_out = "streams[].type must be 'file' or 'rtsp'";
+        return false;
+      }
+      if (sc.type == "rtsp" && !config.rtsp.enable) {
+        error_out = "streams[].type 'rtsp' requires the 'rtsp.enable: true' section";
+        return false;
+      }
       if (s["priority"])
         sc.priority = pipeline::priority_from_str(s["priority"].as<std::string>());
       if (s["expected_fps"])

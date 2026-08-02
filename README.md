@@ -1,6 +1,6 @@
 # JetEdge-Agent
 
-## GitHub 同步快照（2026-08-01）
+## GitHub 同步快照（2026-08-02）
 
 - 阶段 3 已完成并验收通过：YOLO11s ONNX 输入 `1x3x384x640`，输出 `1x84x5040`。
 - ONNX Checker、ONNX Runtime inference、NaN/Inf check 均为 `PASSED`。
@@ -10,6 +10,7 @@
 - **阶段 5 已完成并验收通过（2026-08-01）**：派生 batch-dynamic ONNX 并构建 batch=4 FP16 Engine（`yolo11s_b4_384x640_fp16.engine`，21.25 MiB，SHA256 `136bd5fd...b06818d`），四路视频 + nvstreammux（batch=4）+ nvinfer（batch=4）+ nvtracker 全链路跑通，输出结构化 JSONL（stream_id / track_id / class / confidence / bbox），per-stream input/inference/output FPS 与每帧检测数验证通过，EOS / Ctrl-C / 内存 / stream_id 映射 / track_id 稳定性全部实测通过。
 - **阶段 6 已完成并验收通过（2026-08-01）**：规则事件（appearance / disappearance / count_high / count_exit / zone_entry）+ 事件去重状态机 + 事件 JSONL（1194 行全部合法 JSON）+ 事件触发的整帧关键帧 JPEG（150 次保存、0 错误，内容与源视频 SSIM 0.985 验证）。关键帧取帧最终采用官方 `nvds_obj_enc`（GPU 编码任意 NVMM layout），此前 gst_buffer_map 直读像素与 NvBufSurfaceMap/NvBufSurface2Raw 两条路线均经实机证伪。
 - **阶段 7 已完成并验收通过（2026-08-01）**：事件路由（本地规则本地化 / zone_entry→Qwen 视觉复核 / 周期指标→DeepSeek 诊断）+ 有界异步优先级队列（过载按优先级丢弃）+ 复用的 libcurl HTTP 客户端（超时/有限重试/指数退避/熔断 5/30/2）+ 固定提示词与 jsoncpp 字段级 schema 校验 + **API 故障绝不影响实时管道**。三层验收全部实测通过：单元测试（含熔断器 6 组与 schema 解析 20 项）、本地 mock 端点全链路（qwen 369 + deepseek 6，375 行 analysis JSONL 校验 0 失败，管道 FPS 无影响）、死端点故障注入（熔断 OPEN 后 288 请求跳过）、线上真实 API（qwen3.6-flash 与 deepseek-v4-flash 真实请求成功，首轮暴露的 qwen markdown 围栏解析缺陷经根因确认后修复）。
+- **阶段 8 已完成并验收通过（2026-08-02）**：RTSP 故障隔离与恢复——每流独立状态机（OFFLINE → CONNECTING → RUNNING → DEGRADED → RECONNECTING → FAILED）、指数退避重连（1s→2s→4s→8s→15s）、恢复后输入 FPS 验证（verify 5s / min_fps 1.0）、重试预算耗尽进 FAILED 停止重试风暴、bus ERROR 按元素归属分流（流级错误单流重连，其余流不受影响）。实机验收：4 路 RTSP 冒烟（四路 10s 内进 RUNNING，200s 零重连零失败）、10 轮 cam3 停/恢复故障注入（cam1/2/4 全程 0 stall / 0 reconnect / 0 failure，cam3 每轮自动恢复）、FAILED 路径（6 次真实连续失败后停止重试）、事件 JSONL 8419 行 0 非法、RSS 收敛、EOS/Ctrl-C 干净。本会话定位修复 2 个缺陷：watchdog tick 时间戳下溢导致假 stall（cam4 每轮必误报——now 在循环开头捕获，前一流重建耗时后下溢）、垂死 rtspsrc 的陈旧错误重复计数导致健康流误 FAILED（元素身份校验）。测试环境 MediaMTX + `scripts/rtsp_serve.sh`（用户目录，无系统包）。
 - GitHub 同步源码、配置模板、脚本、Markdown 和 `models/model_info.txt`；模型、视频、Engine、密钥和大日志通过 `.gitignore` 排除。
 - 模型和其他大文件通过 SCP/rsync 同步，并用 SHA256 做 Windows 与 Jetson 端到端一致性验收。
 - 大模型策略：事件驱动、按需调用、异步处理；Qwen/DeepSeek/Agent 不进入实时逐帧主链路。
@@ -20,9 +21,9 @@
 
 ## 当前状态快照
 
-- 当前日期：2026-08-01
-- 已完成：Jetson 环境与远程开发基础、单路本地视频硬件解码、YOLO11s ONNX 导出验证、模型传输与 SHA256 一致性验收、**阶段 4（TensorRT FP16 Engine + 单路 nvinfer 检测验证）**、**阶段 5（四路检测 + Tracker + 结构化 JSONL + per-stream Metrics）**、**阶段 6（事件系统、事件去重和关键帧抽取）**、**阶段 7（Qwen + DeepSeek 异步分析）**
-- 当前阶段：**阶段 8 准备——RTSP 故障恢复与动态调度（未开始）**
+- 当前日期：2026-08-02
+- 已完成：Jetson 环境与远程开发基础、单路本地视频硬件解码、YOLO11s ONNX 导出验证、模型传输与 SHA256 一致性验收、**阶段 4（TensorRT FP16 Engine + 单路 nvinfer 检测验证）**、**阶段 5（四路检测 + Tracker + 结构化 JSONL + per-stream Metrics）**、**阶段 6（事件系统、事件去重和关键帧抽取）**、**阶段 7（Qwen + DeepSeek 异步分析）**、**阶段 8（RTSP 故障隔离与恢复）**
+- 当前阶段：**阶段 9 准备（未开始）——确定性 C++ 动态调度器（NORMAL | PRESSURE | THERMAL | CRITICAL | RECOVERY）与自适应推理间隔，见 `docs/stage8_rtsp.md` 遗留与 CLAUDE.md §15**
 - 当前禁止提前开展：Agent 工具执行、INT8、自适应调度实现（Qwen/DeepSeek 仅限异步低频分析，不进入实时主链路）
 
 当前模型信息：
@@ -286,7 +287,7 @@ Agent 不参与逐帧决策，也不直接操作 DeepStream 内部对象。
 
 ### 当前阶段
 
-- [ ] **阶段 8 准备：RTSP 故障恢复与动态调度（未开始，见 `docs/` 后续规划）。**
+- [x] **阶段 8：RTSP 故障隔离与恢复**（2026-08-02 验收通过）——ReconnectPolicy 状态机（37 checks 单测）、RtspConfig 配置、SourceBin rtsp 分支与运行时重建、bus ERROR 流级分流、1s watchdog（断流/退避/重建/FPS 验证/FAILED）、故障注入验收（10 轮 cam3 停/恢复 + FAILED 路径）、本会话修复 watchdog 下溢假 stall 与陈旧错误重复计数两个缺陷。详见 `docs/stage8_rtsp.md`。
 
 已批准但不属于当前阶段：
 
@@ -297,8 +298,7 @@ Agent 不参与逐帧决策，也不直接操作 DeepStream 内部对象。
 
 ### 后续阶段
 
-- [ ] RTSP 故障恢复（OFFLINE → CONNECTING → RUNNING → DEGRADED → RECONNECTING → FAILED）；
-- [ ] 确定性 C++ 动态调度器（NORMAL | PRESSURE | THERMAL | CRITICAL | RECOVERY）；
+- [ ] 确定性 C++ 动态调度器（NORMAL | PRESSURE | THERMAL | CRITICAL | RECOVERY，含自适应推理间隔）；
 - [ ] ftrace 和 CPU Affinity 分析；
 - [ ] Agent 白名单工具调用、验证、审计和回滚；
 - [ ] INT8 PTQ 与精度回归；

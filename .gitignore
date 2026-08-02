@@ -42,3 +42,8 @@ benchmark_results/
 # Local Claude Code settings (machine-specific permissions)
 .claude/settings.local.json
 .claude/*.tmp*
+
+# Test certificates (RTSP test environment artifacts, e.g. auto.crt)
+*.crt
+*.pem
+*.key

@@ -519,3 +519,167 @@ Stage 7 原定使用 **Kimi + DeepSeek** 双 Provider，现调整为 **Qwen (通
 - 2 小时稳定性测试属最终验收项。
 
 详细报告：`docs/stage7_llm.md`。
+
+---
+
+## 2026-08-01 Stage 8：RTSP 故障隔离与恢复（实施中，未验收）
+
+### 1. 目标
+
+把 SourceManager 扩展为支持 RTSP 源，实现每流独立状态机（OFFLINE → CONNECTING → RUNNING → DEGRADED → RECONNECTING → FAILED）、指数退避重连、单流故障隔离（坏流不影响健康流）、恢复后输入 FPS 验证、超过重试阈值停止重试风暴。不重启整个进程作为恢复设计。调度器（NORMAL/PRESSURE/THERMAL/CRITICAL/RECOVERY）属于后续阶段，不在 Stage 8 范围。
+
+### 2. 测试环境（已就位，未启动验证）
+
+| 项 | 状态 | 说明 |
+|---|---|---|
+| MediaMTX v1.19.3（linux arm64）| 已下载 | 单文件二进制在 `~/jetedge-rtsp/mediamtx`（用户目录，无 sudo/系统包，不入 Git）|
+| `~/jetedge-rtsp/mediamtx.yml` | 已创建 | rtspAddress :8554，paths cam1..cam4 |
+| `scripts/rtsp_serve.sh` | 已创建 | server-start/stop、cam-start/stop/restart、all-start/stop、status；ffmpeg `-re -stream_loop -1 -c copy` 把 DeepStream 样例视频循环推成 rtsp://127.0.0.1:8554/camN（cam1=sample_720p.h264，cam2=sample_office.mp4，cam3=sample_walk.mov，cam4=sample_ride_bike.mov）|
+
+### 3. 代码实现（已写入，已编译，未实机验收）
+
+| 文件 | 操作 | 说明 |
+|---|---|---|
+| `include/jetedge/pipeline/reconnect_policy.h` + `src/pipeline/reconnect_policy.cpp` | 新建 | 纯逻辑每流重连状态机（无 GStreamer 依赖）：状态转换、指数退避 base×2ⁿ 上限 15 s、连续失败 5 次进 FAILED 停止自动重试、成功重置计数 |
+| `tests/test_reconnect_policy.cpp` | 新建 | 状态转换/退避序列/FAILED 阈值/成功重置 等 7 组用例（编译通过，1 处测试断言错误已修正：base=1000/max=1500 首次退避应为 1000 而非 1500，实现符合"base×2ⁿ 封顶 max"文档语义）|
+| `include/jetedge/pipeline/stream_config.h` | 修改 | 新增 `RtspConfig`（enable/live_source/watch_timeout_sec/max_retries/backoff_base_ms/backoff_max_ms/verify_sec/min_fps/rtspsrc_latency_ms/**transport: tcp\|udp\|auto**）|
+| `src/common/config_loader.cpp` | 修改 | 新增 `rtsp:` YAML 段解析 + 范围校验（含 transport 白名单）；`streams[].type` 仅允许 file/rtsp，rtsp 类型要求 `rtsp.enable: true` |
+| `include/jetedge/pipeline/source_bin.h` + `src/pipeline/source_bin.cpp` | 修改 | rtsp 分支：rtspsrc（latency、drop-on-latency、transport 属性）动态 pad 按 caps 选 H.264 → h264parse → nvv4l2decoder；`teardown()`（probe → NULL → 移除，可重建）；`sync_state_with_parent()`（运行时重建后同步状态）；frame probe 记录 last_frame_ts_ms |
+| `include/jetedge/pipeline/source_manager.h` + `src/pipeline/source_manager.cpp` | 修改 | 接线 `RtspConfig`；`rebuild_source(idx)`：unlink decoder pad → release streammux request pad → teardown → build 新链 → 重请求同名字 `sink_<idx>`（stream_id→pad index 映射稳定）→ link → sync；live-source 按 `rtsp.enable && live_source`；`frame_count/last_frame_ts_ms/is_rtsp_source` 辅助 |
+| `include/jetedge/pipeline/pipeline.h` + `src/pipeline/pipeline.cpp` | 修改 | `RtspConfig` 参数；每流 `RtspWatch`（policy + 时间戳）；1 s watchdog 定时器（断流检测→DEGRADED→退避 deadline→重建；CONNECTING 首帧后开 verify_sec 窗口验证 FPS≥min_fps 才 RUNNING；FAILED 停止自动重试）；bus ERROR 按元素归属分流（`src-<id>-*` 前缀向上遍历父链→流级重连，其余致命退出）；重连后重装 EOS probe；周期报告加 rtsp 状态（state/age/reconnects/failures）；RTSP 模式跳过 PAUSED preroll（防启动失败整链重置 NULL）；重建后 pipeline 非 PLAYING 时自愈重拉 |
+| `apps/jetedge_server/main.cpp` | 修改 | `pipeline.build(...)` 传 `config.rtsp` |
+| `CMakeLists.txt` | 修改 | 接入 `reconnect_policy.cpp` + `test_reconnect_policy`（ctest）|
+| `configs/streams_stage8.yaml` | 修改 | 加 `transport: tcp`（实测结论，见下）|
+| `scripts/rtsp_serve.sh` | 修改 | 三处修复（见 §5 测试环境排障）|
+
+### 4. 编译与单元测试（已通过）
+
+- `cmake -S . -B build && cmake --build build -j2`：全部目标编译通过，无警告
+- `ctest` 4/4 PASS：test_event_engine + test_circuit_breaker + test_prompt_manager + **test_reconnect_policy（37 checks）**
+- file 模式回归（`streams_stage7.yaml` 副本输出到独立路径）：4 路 2072 帧 EXIT=0；事件 JSONL **1194 行与 Stage 6/7 完全一致**（cam1 appearance 369 / disappearance 369 / count_high 33 / count_exit 32 / zone_entry 369）；0 条 rtsp/llm 日志 → 无行为退化
+
+### 5. RTSP 测试环境排障（重要，全部实机定位）
+
+| # | 问题 | 根因 | 修复 |
+|---|---|---|---|
+| 1 | `-c copy` 从 mp4/mov 推 RTSP 的流损坏（客户端 "Invalid level prefix"，服务器 "invalid FU-A packet"）| mp4/mov 的 H.264 是 AVCC（长度前缀）格式，RTP 需要 Annex-B | 发布命令加 `-bsf:v h264_mp4toannexb` |
+| 2 | MediaMTX 收 4 路 UDP 发布大量丢包（FU-A 碎片中途丢失）| UDP socket 缓冲不足（无 CAP_NET_ADMIN，rmem 受限）| 发布改 TCP：`-rtsp_transport tcp`（注意：该选项是输出端 muxer 选项，必须放在 `-i` 之后，否则 "Option rtsp_transport not found"）|
+| 3 | gst 客户端 UDP 收 1080p 必丢包（gstudpsrc 要 512 KB，系统 `net.core.rmem_max`=212 KB 且无权限调大）| 系统级 UDP 缓冲限制（不动系统网络设置）| 应用侧 rtspsrc 走 TCP：新增 `rtsp.transport: tcp` 配置（SourceBin 设 `protocols=GST_RTSP_LOWER_TRANS_TCP`）|
+| 4 | cam1 发布进程循环一次后死亡：`sample_720p.h264: Operation not permitted` | **ffmpeg 对 raw .h264 + `-stream_loop -1` 的缺陷**：循环边界 seek 回 0 报 EPERM（在 /tmp 副本上复现，与文件系统/权限无关；mp4/mov 循环正常）| cam1 改用同场景 `sample_720p.mp4` 发布 |
+
+### 6. 当前状态与未完成项
+
+- [x] CMakeLists 接入 reconnect_policy + test_reconnect_policy
+- [x] SourceManager 重连管理（release/重建 request pad、故障隔离、FPS 验证窗口）
+- [x] Pipeline bus 错误分流 + 断流 watch 定时器 + 周期状态报告
+- [x] 编译 + 单元测试运行 + file 模式回归
+- [x] RTSP 环境启动验证（四路可探测、cam1/cam2 客户端解码 0 错误）
+- [ ] **cam3/cam4（mov 容器）发布后 RTP 仍损坏**：客户端 TCP 消费持续 11~19 错误/10 s；MediaMTX 侧零错误；抓包落盘本地解码仍损坏 → 损坏在发布端。cam1(mp4)/cam2(mp4) 干净。**假设：ffmpeg mov→RTP 打包问题。下一个实验（已准备未执行）：`ffmpeg -i sample_walk.mov -c copy sample_walk_remux.mp4` remux 成 mp4 再发布验证；若通过则 rtsp_serve.sh 全部改用 mp4 源**
+- [ ] 应用级 RTSP 冒烟（已验证错误分流/重连调度正确：所有流级错误被识别并调度重连、进程不崩；**四路尚未进入 RUNNING**，待流修复后重跑）
+- [ ] 实机故障注入验收（停 cam3 其余三路继续、恢复自动接入、反复故障 ≥10 次、pad 无泄漏、FAILED 停止重试风暴、内存收敛、EOS/Ctrl-C 干净）
+- [ ] `docs/stage8_rtsp.md` 报告 + README/PROGRESS 同步 + 提交
+
+**当前状态：实现中（implemented，编译/单测/回归通过；实机验收被 cam3/cam4 mov 发布问题阻塞）**——不视为完成。
+
+## 2026-08-02 Stage 8：RTSP 实机排障（崩溃修复 + 根因定位，未验收）
+
+### 1. 会话起点状态确认
+
+- 代码/单测/回归状态不变：ctest 4/4 PASS、file 模式回归 1194 事件行与 Stage 6/7 一致
+- cam3/cam4 remux 修复生效：四路 ffmpeg 客户端逐一验证 **0 错误 / 10 s**（此前 cam3/cam4 11~19 错误/10 s）
+
+### 2. 崩溃修复：`tick_rtsp_watch` 悬垂引用（use-after-free）
+
+| 项 | 内容 |
+|---|---|
+| 症状 | 4 路 RTSP 运行 ~30 s 段错误（SIGSEGV，exit 139，core 走 apport）|
+| 定位 | gdb 栈：`tick_rtsp_watch` → 日志 `"rtsp stream=%s verified…"` 在 `__strlen` 崩溃 |
+| 根因 | `SourceManager::stream_ids()` 按值返回临时 `vector<string>`；`const std::string& sid = stream_ids()[i]` 绑定临时元素，语句结束即悬垂；后续 `sid.c_str()` use-after-free（依赖堆复用，故偶发，首轮 90 s 崩溃、gdb 复现延迟到 cam4 验证消息）|
+| 修复 | `src/pipeline/pipeline.cpp:612` 改为按值拷贝 + 注释；已 grep 全部调用点，其余均为按值拷贝或单表达式内使用，无同类问题 |
+
+### 3. 发布流健康验证（实机，全部干净）
+
+- 四路 ffmpeg 客户端 0 错误/10 s
+- 纯 gst 客户端（`rtspsrc → h264parse → nvv4l2decoder`，与 app 同链）消费 cam2 40 s 跨 7+ 个循环边界：0 错误
+- ffprobe 抓 cam1 RTP PTS 55 s（跨 48 s 循环边界）：**无 >1 s gap、无大 PTS 回跳**，~77 pkt/s 连续
+- 结论：**发布端干净，问题在应用侧**（MediaMTX 日志证实每个会话服务端都在发送 "is reading"，而应用 frame probe 为 0）
+
+### 4. 应用侧两个根因
+
+**根因 A（cam1 永不进 RUNNING）：长 GOP 与首帧窗口不匹配**
+- `sample_720p.mp4` GOP **8.33 s**（ffprobe 实测 keyframe 间距）；cam2/3/4 源 GOP 4.3~9.6 s 但实测首帧 <5 s 到达
+- `watch_timeout_sec=5` 同时充当"连接后首帧等待窗口"：连接落在 GOP 中段时，首个 IDR 最迟 8.33 s 才到 → 5 s 到点拆连接 → 新连接又落在新 GOP 中段 → 反复 `no-frames`（单路运行 4 次连接才撞上一次成功；4 路运行时 cam1 4 个会话全部失败）
+- 附证：单路 debug 运行（GST_DEBUG）显示健康会话里 depay 从 2.4 s 起 30 fps 推帧、h264parse "Inserting AUD" 逐帧、decoder 正常出帧——失败/成功取决于连接时刻离下一个 IDR 是否 <5 s
+
+**根因 B（cam2/3/4 同时 stall + 误 FAILED）：重建 churn 扰动 muxer + 失败信号重复计数**
+- cam1 每 ~7 s 重建一次；10:46:33 cam1 重建与 cam2/3/4 同时刻 stall（三条 DEGRADED 与 "cam1 rebuilt" 同一秒）→ 单流重建 churn 扰动 live-source nvstreammux，其他流 decoder 出帧停止（连接保持存活）
+- app 对 stall 流执行 teardown 重建时，垂死 rtspsrc 连发多条 bus ERROR（"Internal data stream error" + "Could not write to resource"，2~4 条/次），**每条都计一次 failure** → 单次真实故障吞掉 2-3 次重试预算 → cam2/cam4 在 6~7"次"失败即 FAILED（日志 298-301 行）
+- 附带观察：churn 期 per-stream fps 降至 ~15（半速），恢复后正常
+
+### 5. 修复（已编译通过，未回归）
+
+| Fix | 内容 | 文件 |
+|---|---|---|
+| A | 新增 `rtsp.first_frame_timeout_sec`（默认 12 s，校验 [1,120]）：首帧等待窗口与运行中 stall 窗口（`watch_timeout_sec=5`）分离 | `stream_config.h` / `config_loader.cpp` / `pipeline.cpp` / 两个 stage8 配置 |
+| B | `schedule_reconnect` 失败信号合并：已 FAILED 或已有 pending 重连（`now < deadline_ms`）时忽略新失败信号，不再重复计数 | `pipeline.cpp` |
+| C | 自愈日志改用 `gst_element_state_change_return_get_name`（原 `rc=0` 实为 `GST_STATE_CHANGE_FAILURE=0`，易误读为成功）| `pipeline.cpp` |
+
+### 6. 未完成（下次会话接续）
+
+- [ ] ctest 4/4 回归（Fix 后未跑）
+- [ ] 4 路 120 s 冒烟：四路应全部进 RUNNING（发布端自 10:39 持续运行；建议先 `cam-restart` 再跑）
+- [ ] 实机故障注入验收（停 cam3 其余三路继续、恢复自动接入、反复故障 ≥10 次、pad 无泄漏、FAILED 停止重试风暴、内存收敛、EOS/Ctrl-C）
+- [ ] `docs/stage8_rtsp.md` + README/PROGRESS 同步 + 提交
+
+**当前状态：实现中（implemented，编译通过；冒烟与故障注入验收未跑，不视为完成）**
+
+## 2026-08-02 Stage 8：验收通过（下溢假 stall 与陈旧错误计数两个缺陷定位修复）
+
+### 1. 会话起点
+
+- 上一会话遗留：Fix A/B/C 已编译未回归；4 路冒烟与故障注入未跑
+- 本会话完成：回归 → 冒烟 → 10 轮故障注入 → FAILED 路径 → 文档同步提交
+
+### 2. 回归与冒烟（全部实测）
+
+- ctest 4/4 PASS（Fix A/B/C 后）；file 模式回归 1194 事件行与 Stage 6/7 一致
+- 4 路 RTSP 冒烟 200s：四路 ~10s 内 RUNNING（修复 A 生效——此前 cam1 永不进 RUNNING），0 重连 0 失败，每路 ~29.3 fps，事件 6773 行 0 非法，SIGINT 干净
+
+### 3. 缺陷 R1：watchdog tick 时间戳下溢 → cam4 每轮必假 stall
+
+- 症状：10 轮 cam3 停/恢复中 cam4 **每一轮**都在 cam3 断源后 1-2s 报 DEGRADED（cam1/cam2 从不误报），随后无谓重建
+- 证据链（三层实机定位）：
+  1. 纯 GStreamer 客户端（无 muxer/nvinfer，与 app 同源链）消费 cam4：停 cam3 期间 NAL 速率恒定 ~630/2s 零跌落 → **服务器持续投递，问题在应用管道**
+  2. `GST_DEBUG=nvstreammux:5`：断源期间 muxer 推 batch size=3 部分批次，source 3 帧 stall 窗口内 60 帧/2s 无跌落 → **decoder 全程输出 → stall 是假的**
+  3. 插桩 tick 日志实锤：`last=10957559 now=10957523`（**last 比 now 大 36ms**）→ `now - last` 无符号下溢 → 巨数 → 假 stall
+- 根因：`tick_rtsp_watch` 循环开头捕获一次 `now`；循环体内前一流（cam3）的 `do_reconnect` 重建（teardown/build/link/sync）耗时 ~100ms 主线程重活；cam4 的检查在重建之后执行——`now` 是重建前的旧值、`last`（帧探针）是重建后的新值 → 下溢。cam4 是 cam3 后检查的第一个流所以每轮必中；cam1/2 在循环前段先于重建检查从不误报
+- 修复：`now` 移入每流循环内重新读取 + kRunning 检查加 `last <= now` 保护（探针/tick 良性竞态一并覆盖）
+- 验证：修复后同样 10 轮注入 **cam4 0 stall / 0 reconnect / 0 failure**；此前"muxer 扰动 cam4"现象全部消失（假 stall 触发的重建 churn 才是真实扰动源）
+
+### 4. 缺陷 R2：垂死元素错误重复计数 → 健康流误 FAILED
+
+- 症状（修复前）：cam4 帧流健康（RECONNECTING 期间 frames 持续增长）却累进 6 次失败 FAILED；单次真实故障吞掉 2-4 次重试预算
+- 根因：teardown 中旧 rtspsrc 连发 2~4 条 bus ERROR（"Internal data stream error"/"Could not write to resource"），消息异步到达；重建（mark_connect）后到达的错误不在 Fix B 的 pending 窗口 → 每条计为新失败
+- 修复：`on_bus_message` 流级错误加**元素身份校验**（`SourceBin::is_chain_element`：错误源必须是当前链实例，旧元素一律忽略并记 INFO 日志）
+- 验证：早期运行 19 次正确忽略；真实 404（"Could not open resource"/"Not found"，发布端重启竞态）仍正确计数并退避重试恢复
+
+### 5. 实机故障注入验收（修复后，PID 55118，8.5 分钟）
+
+| 检查项 | 结果 |
+|---|---|
+| 10 轮 cam3 停 6s/恢复 | cam3 每轮 stall→1 失败→恢复→failures 归零（10/10）；恢复期偶发真实 404（发布端未就绪）正确计数后恢复 |
+| cam1 / cam2 / cam4 | **全程 0 stall / 0 reconnect / 0 failure**（460s，~30fps）|
+| Phase 2 长期停源 | 6 次真实连续失败 → RTSP006 FAILED → 0 次后续重试（风暴停止）；发布端恢复后保持 FAILED（按设计）|
+| 事件 JSONL | 8419 行逐行校验 0 非法（cam1 8045 / cam2 118 / cam3 82 / cam4 174）|
+| RSS | 616.4 → 650.5 MiB 收敛 |
+| SIGINT | 优雅退出 exit OK（含 FAILED 态流）|
+| ctest | 4/4 PASS |
+
+### 6. 验收结论
+
+**验收通过（2026-08-02）。** 已按 CLAUDE.md 4.6 流程同步文档（`docs/stage8_rtsp.md` 新建、README/PROGRESS/日志更新）并提交推送。
+
+### 7. 遗留（后续阶段）
+
+- FAILED 不自动复活（设计如此，重试预算耗尽）；2 小时稳定性测试属最终验收项
+- 确定性 C++ 动态调度器（NORMAL|PRESSURE|THERMAL|CRITICAL|RECOVERY）+ 自适应推理间隔 = Stage 9
