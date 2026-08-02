@@ -777,3 +777,19 @@ A task is complete only when:
 - no secret or large generated artifact was added to Git;
 - synchronization state is clear;
 - remaining limitations are stated honestly.
+
+---
+
+## Agent skills
+
+### Issue tracker
+
+Issues are tracked as GitHub issues via the `gh` CLI. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Default canonical labels: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context repo — one `CONTEXT.md` + `docs/adr/` at the repo root (created lazily by `/domain-modeling`). See `docs/agents/domain.md`.
