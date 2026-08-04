@@ -428,6 +428,26 @@ bool load_streams_config(const std::string& path, StreamsConfig& config, std::st
         if (v < 1 || v > 1000) { error_out = "control.max_snapshots must be in [1,1000]"; return false; }
         config.control.max_snapshots = v;
       }
+      if (c_node["benchmark_min_duration_s"]) {
+        const int v = c_node["benchmark_min_duration_s"].as<int>();
+        if (v < 1 || v > 3600) { error_out = "control.benchmark_min_duration_s must be in [1,3600]"; return false; }
+        config.control.benchmark_min_duration_s = v;
+      }
+      if (c_node["benchmark_max_duration_s"]) {
+        const int v = c_node["benchmark_max_duration_s"].as<int>();
+        if (v < 1 || v > 3600) { error_out = "control.benchmark_max_duration_s must be in [1,3600]"; return false; }
+        config.control.benchmark_max_duration_s = v;
+      }
+      if (c_node["benchmark_default_duration_s"]) {
+        const int v = c_node["benchmark_default_duration_s"].as<int>();
+        if (v < 1 || v > 3600) { error_out = "control.benchmark_default_duration_s must be in [1,3600]"; return false; }
+        config.control.benchmark_default_duration_s = v;
+      }
+      if (config.control.benchmark_min_duration_s >=
+          config.control.benchmark_max_duration_s) {
+        error_out = "control.benchmark_min_duration_s must be < benchmark_max_duration_s";
+        return false;
+      }
     }
 
     // ---- Streams section ---------------------------------------------------

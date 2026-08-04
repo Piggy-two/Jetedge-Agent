@@ -1032,6 +1032,33 @@ std::vector<metrics::MetricsRegistry::StreamSummary> Pipeline::metrics_summary()
                   : std::vector<metrics::MetricsRegistry::StreamSummary>{};
 }
 
+metrics::MetricsRegistry::LatencyStats Pipeline::latency_stats(int stream_idx) const {
+  if (!metrics_) {
+    return {};
+  }
+  return metrics_->latency_stats(stream_idx);
+}
+
+metrics::MetricsRegistry::LatencyStats Pipeline::latency_stats_since(
+    int stream_idx, uint64_t since_seq) const {
+  if (!metrics_) {
+    return {};
+  }
+  return metrics_->latency_stats_since(stream_idx, since_seq);
+}
+
+std::vector<uint32_t> Pipeline::latency_samples_since(
+    int stream_idx, uint64_t since_seq) const {
+  if (!metrics_) {
+    return {};
+  }
+  return metrics_->latency_samples_since(stream_idx, since_seq);
+}
+
+uint64_t Pipeline::latency_watermark() const {
+  return metrics_ ? metrics_->latency_watermark() : 0;
+}
+
 control::SchedulerStatus Pipeline::make_scheduler_status() const {
   control::SchedulerStatus st;
   st.enabled = scheduler_config_.enable;

@@ -92,6 +92,9 @@ control:
   max_infer_interval: 5
   restart_min_interval_ms: 30000
   max_snapshots: 32
+  benchmark_min_duration_s: 5
+  benchmark_max_duration_s: 120
+  benchmark_default_duration_s: 60
 
 streams:
   - id: cam1

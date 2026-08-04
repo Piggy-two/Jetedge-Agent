@@ -63,7 +63,7 @@ GstPadProbeReturn on_counting_probe(GstPad* /*pad*/, GstPadProbeInfo* info,
     if (!frame_meta) {
       continue;
     }
-    fn(static_cast<int>(frame_meta->pad_index));
+    fn(static_cast<int>(frame_meta->pad_index), frame_meta->frame_num);
   }
   return GST_PAD_PROBE_OK;
 }
@@ -71,15 +71,18 @@ GstPadProbeReturn on_counting_probe(GstPad* /*pad*/, GstPadProbeInfo* info,
 GstPadProbeReturn on_input_probe(GstPad* pad, GstPadProbeInfo* info,
                                  gpointer user_data) {
   auto* metrics = static_cast<metrics::MetricsRegistry*>(user_data);
-  return on_counting_probe(pad, info, user_data, [metrics](int idx) {
+  return on_counting_probe(pad, info, user_data,
+                           [metrics](int idx, uint64_t frame_num) {
     metrics->on_input_frame(idx);
+    metrics->on_latency_begin(idx, frame_num);
   });
 }
 
 GstPadProbeReturn on_infer_probe(GstPad* pad, GstPadProbeInfo* info,
                                  gpointer user_data) {
   auto* metrics = static_cast<metrics::MetricsRegistry*>(user_data);
-  return on_counting_probe(pad, info, user_data, [metrics](int idx) {
+  return on_counting_probe(pad, info, user_data,
+                           [metrics](int idx, uint64_t /*frame_num*/) {
     metrics->on_infer_frame(idx);
   });
 }
@@ -149,6 +152,7 @@ GstPadProbeReturn on_output_probe(GstPad* /*pad*/, GstPadProbeInfo* info,
 
     if (ctx->metrics) {
       ctx->metrics->on_output_frame(stream_idx, obj_count);
+      ctx->metrics->on_latency_end(stream_idx, frame_meta->frame_num);
     }
   }
   return GST_PAD_PROBE_OK;

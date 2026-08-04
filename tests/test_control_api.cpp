@@ -85,6 +85,7 @@ class FakeBackend : public ControlBackend {
   int set_interval_calls = 0;
   int restart_calls = 0;
   int rollback_calls = 0;
+  mutable int summary_calls = 0;  // advances per metrics_summary() call
   bool fail_apply = false;       // set_infer_interval returns an error
   bool verify_mismatch = false;  // applied value never sticks (read-back differs)
 
@@ -109,8 +110,49 @@ class FakeBackend : public ControlBackend {
   }
 
   std::vector<jetedge::metrics::MetricsRegistry::StreamSummary> metrics_summary() const override {
+    ++summary_calls;
+    std::vector<jetedge::metrics::MetricsRegistry::StreamSummary> out;
+    for (const auto& s : streams) {
+      jetedge::metrics::MetricsRegistry::StreamSummary sum;
+      sum.stream_id = s.id;
+      sum.input_frames = static_cast<uint64_t>(summary_calls) * 25;
+      sum.output_frames = static_cast<uint64_t>(summary_calls) * 24;
+      sum.latest_input_fps = 29.0;
+      sum.latest_output_fps = 28.0;
+      sum.latency = jetedge::metrics::MetricsRegistry::compute_stats_from_us(
+          kCannedUs);
+      out.push_back(sum);
+    }
+    return out;
+  }
+
+  // ---- Stage 12 latency (canned, deterministic) -----------------------------
+
+  static constexpr uint64_t kCannedWatermark = 500;
+  static const std::vector<uint32_t> kCannedUs;  // {10,20,30,40,50} ms
+
+  jetedge::metrics::MetricsRegistry::LatencyStats latency_stats(
+      int /*stream_idx*/) const override {
+    return jetedge::metrics::MetricsRegistry::compute_stats_from_us(kCannedUs);
+  }
+
+  jetedge::metrics::MetricsRegistry::LatencyStats latency_stats_since(
+      int /*stream_idx*/, uint64_t since_seq) const override {
+    if (since_seq == kCannedWatermark) {
+      return jetedge::metrics::MetricsRegistry::compute_stats_from_us(kCannedUs);
+    }
     return {};
   }
+
+  std::vector<uint32_t> latency_samples_since(int /*stream_idx*/,
+                                              uint64_t since_seq) const override {
+    if (since_seq == kCannedWatermark) {
+      return kCannedUs;
+    }
+    return {};
+  }
+
+  uint64_t latency_watermark() const override { return kCannedWatermark; }
 
   SchedulerStatus scheduler_status() const override {
     SchedulerStatus st;
@@ -181,6 +223,10 @@ class FakeBackend : public ControlBackend {
   }
 };
 
+// Canned Stage 12 latency samples: 10, 20, 30, 40, 50 ms.
+const std::vector<uint32_t> FakeBackend::kCannedUs = {10000, 20000, 30000,
+                                                      40000, 50000};
+
 // Build a ControlServer wired to a FakeBackend with the given streams.
 // state_dir is a fresh temp dir (cleaned at the end of the test).
 struct ServerFixture {
@@ -197,6 +243,9 @@ struct ServerFixture {
     cfg.port = 0;  // ephemeral; tests call handle_request directly
     cfg.state_dir = dir.string();
     cfg.restart_min_interval_ms = 100000;  // throttle effectively off for tests
+    // Fast benchmark windows: 1s default and floor.
+    cfg.benchmark_min_duration_s = 1;
+    cfg.benchmark_default_duration_s = 1;
     backend.streams = std::move(streams);
     const bool ok = server.start(cfg, &backend);
     CHECK(ok);
@@ -739,6 +788,100 @@ static void test_rollback_verify_restores() {
   CHECK_EQ(f.backend.streams[0].interval, 0);
 }
 
+// ---- Stage 12: latency fields + POST /benchmark -----------------------------
+
+static void test_metrics_summary_latency_fields() {
+  ServerFixture fx({mk_stream("cam1", "high"), mk_stream("cam2", "low")});
+  const HttpResponse r = fx.get("/metrics/summary");
+  if (!fx.response_success(r, "metrics/summary latency fields")) return;
+  Json::Value root;
+  Json::Reader reader;
+  reader.parse(r.body, root);
+  const auto& streams = root["data"]["streams"];
+  CHECK(streams.isArray() && streams.size() == 2);
+  for (const auto& s : streams) {
+    CHECK(s.isMember("lat_samples"));
+    CHECK_EQ(s["lat_samples"].asUInt64(), 5U);
+    CHECK(s.isMember("lat_p50_ms"));
+    CHECK(s.isMember("lat_p95_ms"));
+    CHECK(s.isMember("lat_p99_ms"));
+    CHECK(s.isMember("lat_max_ms"));
+  }
+  // Canned samples {10,20,30,40,50} ms → p95 == max == 50, avg == 30.
+  CHECK_EQ(streams[0]["lat_p95_ms"].asDouble(), 50.0);
+  CHECK_EQ(streams[0]["lat_p50_ms"].asDouble(), 30.0);
+  CHECK_EQ(streams[0]["lat_avg_ms"].asDouble(), 30.0);
+}
+
+static void test_benchmark_validation() {
+  ServerFixture fx({mk_stream("cam1", "high"), mk_stream("cam2", "low")});
+  // duration_s type / range errors → 400 PARAM_DURATION.
+  CHECK_EQ(fx.post("/benchmark", R"({"duration_s":"5"})").status, 400);
+  CHECK_EQ(fx.response_error_code(fx.post("/benchmark", R"({"duration_s":"5"})")),
+           "PARAM_DURATION");
+  CHECK_EQ(fx.post("/benchmark", R"({"duration_s":0})").status, 400);
+  CHECK_EQ(fx.post("/benchmark", R"({"duration_s":500})").status, 400);  // > max 120
+  // per_stream must be an array of existing streams.
+  CHECK_EQ(fx.post("/benchmark", R"({"per_stream":"cam1"})").status, 400);
+  CHECK_EQ(fx.post("/benchmark", R"({"per_stream":["cam9"]})").status, 404);
+  CHECK_EQ(fx.response_error_code(fx.post("/benchmark", R"({"per_stream":["cam9"]})")),
+           "PARAM_STREAM");
+}
+
+static void test_benchmark_window() {
+  ServerFixture fx({mk_stream("cam1", "high"), mk_stream("cam2", "low")});
+  const HttpResponse r = fx.post("/benchmark", R"({"duration_s":1})");
+  if (!fx.response_success(r, "benchmark window")) return;
+  Json::Value root;
+  Json::Reader reader;
+  reader.parse(r.body, root);
+  const auto& data = root["data"];
+  CHECK_EQ(data["duration_s"].asInt(), 1);
+  CHECK(data.isMember("started_at_ms") && data.isMember("ended_at_ms"));
+  CHECK_EQ(data["scheduler_state_before"].asString(), "NORMAL");
+  CHECK_EQ(data["scheduler_state_after"].asString(), "NORMAL");
+  CHECK(data.isMember("table_before") && data.isMember("table_after"));
+
+  // FakeBackend advances +25 in / +24 out per metrics_summary() call, so the
+  // window delta is 25 in / 24 out → drop_rate 0.04, complete (>= max(5,1*5)).
+  const auto& streams = data["streams"];
+  CHECK(streams.isMember("cam1") && streams.isMember("cam2"));
+  const auto& cam1 = streams["cam1"];
+  CHECK_EQ(cam1["frames_in"].asUInt64(), 25U);
+  CHECK_EQ(cam1["frames_out"].asUInt64(), 24U);
+  CHECK(cam1["complete"].asBool());
+  const double drop = cam1["drop_rate"].asDouble();
+  CHECK(drop > 0.039 && drop < 0.041);
+  // Latency sliced via watermark: canned {10..50} ms.
+  CHECK_EQ(cam1["latency"]["samples"].asUInt64(), 5U);
+  CHECK_EQ(cam1["latency"]["p95_ms"].asDouble(), 50.0);
+
+  // Global pool merges both streams (10 samples) → p95 still 50, avg 30.
+  const auto& global = data["global"];
+  CHECK_EQ(global["samples"].asUInt64(), 10U);
+  CHECK_EQ(global["p95_ms"].asDouble(), 50.0);
+  CHECK_EQ(global["avg_ms"].asDouble(), 30.0);
+  CHECK(global["drop_rate"].asDouble() > 0.039 &&
+        global["drop_rate"].asDouble() < 0.041);
+}
+
+static void test_benchmark_audit_line() {
+  ServerFixture fx({mk_stream("cam1", "high")});
+  CHECK(fx.post("/benchmark", R"({"duration_s":1})").status == 200);
+  bool found = false;
+  for (const auto& line : read_lines(fx.dir.string() + "/audit.jsonl")) {
+    Json::Value rec;
+    Json::Reader reader;
+    if (reader.parse(line, rec) && rec.get("operation", "").asString() == "benchmark") {
+      found = true;
+      CHECK(rec.get("success", false).asBool());
+      CHECK_EQ(rec["args"]["duration_s"].asInt(), 1);
+      break;
+    }
+  }
+  CHECK(found);
+}
+
 int main() {
   test_param_validation();
   test_error_store();
@@ -754,6 +897,10 @@ int main() {
   test_restart_throttle();
   test_snapshot_and_rollback_endpoints();
   test_rollback_verify_restores();
+  test_metrics_summary_latency_fields();
+  test_benchmark_validation();
+  test_benchmark_window();
+  test_benchmark_audit_line();
 
   std::printf("test_control_api: %d checks, %d failures\n", g_checks, g_failures);
   return g_failures == 0 ? 0 : 1;

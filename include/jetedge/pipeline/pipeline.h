@@ -85,6 +85,13 @@ class Pipeline : public control::ControlBackend {
   std::vector<std::string> stream_ids() const override;
   std::vector<control::StreamStatus> stream_status() const override;
   std::vector<metrics::MetricsRegistry::StreamSummary> metrics_summary() const override;
+  // Stage 12: inference-stage latency (metrics registry passthrough).
+  metrics::MetricsRegistry::LatencyStats latency_stats(int stream_idx) const override;
+  metrics::MetricsRegistry::LatencyStats latency_stats_since(
+      int stream_idx, uint64_t since_seq) const override;
+  std::vector<uint32_t> latency_samples_since(
+      int stream_idx, uint64_t since_seq) const override;
+  uint64_t latency_watermark() const override;
   control::SchedulerStatus scheduler_status() const override;
   scheduler::SchedulerConfig scheduler_config() const override;
   std::vector<control::ErrorRecord> recent_errors(size_t limit) const override;

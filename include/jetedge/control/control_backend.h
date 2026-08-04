@@ -91,6 +91,15 @@ class ControlBackend {
   // Metrics snapshot (metrics registry is internally thread-safe).
   virtual std::vector<metrics::MetricsRegistry::StreamSummary> metrics_summary() const = 0;
 
+  // Stage 12: inference-stage latency statistics (ring samples).  A benchmark
+  // window is sliced with latency_watermark() taken before the window.
+  virtual metrics::MetricsRegistry::LatencyStats latency_stats(int stream_idx) const = 0;
+  virtual metrics::MetricsRegistry::LatencyStats latency_stats_since(
+      int stream_idx, uint64_t since_seq) const = 0;
+  virtual std::vector<uint32_t> latency_samples_since(
+      int stream_idx, uint64_t since_seq) const = 0;
+  virtual uint64_t latency_watermark() const = 0;
+
   virtual SchedulerStatus scheduler_status() const = 0;
   virtual scheduler::SchedulerConfig scheduler_config() const = 0;
 

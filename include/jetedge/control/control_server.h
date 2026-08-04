@@ -29,6 +29,9 @@
 //   POST /streams/<id>/restart       {}   (RTSP only, throttled)
 //   POST /config/snapshot            {"reason":"..."} → explicit snapshot
 //   POST /config/rollback            {"snapshot_id":"..."} → restore
+//   POST /benchmark {"duration_s":5..120, "per_stream":[...]} → measurement
+//          window (read-only, single-flight; other requests queue while it
+//          runs — the accept thread is blocked for duration_s)
 //
 // Response envelope:
 //   {"success":true,  "request_id", "timestamp_ms", "data":{...}, "snapshot_id"}
@@ -36,6 +39,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <mutex>
 #include <string>
@@ -90,6 +94,9 @@ class ControlServer {
   Json::Value json_scheduler_state() const;
   Json::Value json_recent_errors() const;
 
+  // POST /benchmark — controlled measurement window (read-only, single-flight).
+  HttpResponse handle_benchmark(const std::string& request_id, const Json::Value& body);
+
   // ---- write ops (the §16 flow) ---------------------------------------------
   HttpResponse write_op(const std::string& request_id, WriteOp op,
                         const std::string& stream_id, const Json::Value& body);
@@ -114,6 +121,9 @@ class ControlServer {
   SnapshotStore snapshots_;
   AuditLog audit_;
   std::mutex write_mu_;       // serializes write ops (one at a time)
+  std::mutex benchmark_mu_;   // single-flight for POST /benchmark
+  std::atomic<bool> stopping_{false};  // set before http_.stop(): lets a
+                                       // running benchmark window exit early
   std::vector<uint64_t> last_restart_ms_;  // per-stream restart throttle (mono ms)
   uint64_t seq_ = 0;
 };

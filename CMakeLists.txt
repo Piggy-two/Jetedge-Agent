@@ -156,9 +156,15 @@ add_executable(test_control_api tests/test_control_api.cpp
                src/control/error_store.cpp
                src/control/http_server.cpp
                src/control/param_validation.cpp
-               src/control/snapshot_store.cpp)
+               src/control/snapshot_store.cpp
+               src/metrics/metrics_registry.cpp)
 target_include_directories(test_control_api PRIVATE ${CMAKE_SOURCE_DIR}/include)
 target_link_libraries(test_control_api PRIVATE Threads::Threads PkgConfig::JSONCPP)
+
+add_executable(test_metrics_registry tests/test_metrics_registry.cpp
+               src/metrics/metrics_registry.cpp)
+target_include_directories(test_metrics_registry PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(test_metrics_registry PRIVATE Threads::Threads)
 
 enable_testing()
 add_test(NAME event_engine COMMAND test_event_engine)
@@ -167,3 +173,4 @@ add_test(NAME prompt_manager COMMAND test_prompt_manager)
 add_test(NAME reconnect_policy COMMAND test_reconnect_policy)
 add_test(NAME scheduler_policy COMMAND test_scheduler_policy)
 add_test(NAME control_api COMMAND test_control_api)
+add_test(NAME metrics_registry COMMAND test_metrics_registry)

@@ -1,6 +1,8 @@
 #include "jetedge/control/control_server.h"
 
 #include <algorithm>
+#include <chrono>
+#include <thread>
 #include <vector>
 
 #include "jetedge/common/logging.h"
@@ -58,6 +60,9 @@ bool ControlServer::start(const ControlConfig& cfg, ControlBackend* backend) {
 }
 
 void ControlServer::stop() {
+  // Let a running benchmark window exit early so the accept-thread join
+  // cannot block for up to benchmark_max_duration_s.
+  stopping_.store(true);
   http_.stop();
   audit_.close();
 }
@@ -136,6 +141,9 @@ HttpResponse ControlServer::route(const HttpRequest& req) {
     if (parts == std::vector<std::string>{"config", "rollback"}) {
       return handle_rollback(request_id, body);
     }
+    if (parts == std::vector<std::string>{"benchmark"}) {
+      return handle_benchmark(request_id, body);
+    }
     return make_err(request_id, 404, "PARAM_PATH", "unknown path '" + req.path + "'");
   }
 
@@ -201,6 +209,13 @@ Json::Value ControlServer::json_metrics_summary() const {
     js["latest_input_fps"] = s.latest_input_fps;
     js["latest_infer_fps"] = s.latest_infer_fps;
     js["latest_output_fps"] = s.latest_output_fps;
+    // Stage 12: inference-stage latency (input probe → output probe, ring).
+    js["lat_samples"] = Json::Value::UInt64(s.latency.samples);
+    js["lat_avg_ms"] = s.latency.avg_ms;
+    js["lat_p50_ms"] = s.latency.p50_ms;
+    js["lat_p95_ms"] = s.latency.p95_ms;
+    js["lat_p99_ms"] = s.latency.p99_ms;
+    js["lat_max_ms"] = s.latency.max_ms;
     streams.append(js);
   }
   data["streams"] = streams;
@@ -643,6 +658,187 @@ HttpResponse ControlServer::handle_rollback(const std::string& request_id,
   Json::Value data;
   data["snapshot_id"] = snapshot_id;
   return make_ok(request_id, data, snapshot_id);
+}
+
+HttpResponse ControlServer::handle_benchmark(const std::string& request_id,
+                                             const Json::Value& body) {
+  // 1. Validate duration_s (int, within the configured window bounds).
+  int duration_s = cfg_.benchmark_default_duration_s;
+  if (body.isMember("duration_s")) {
+    if (!body["duration_s"].isInt()) {
+      return make_err(request_id, 400, "PARAM_DURATION",
+                      "'duration_s' (int) is required");
+    }
+    duration_s = body["duration_s"].asInt();
+    if (duration_s < cfg_.benchmark_min_duration_s ||
+        duration_s > cfg_.benchmark_max_duration_s) {
+      return make_err(request_id, 400, "PARAM_DURATION",
+                      "duration_s must be in [" +
+                          std::to_string(cfg_.benchmark_min_duration_s) + "," +
+                          std::to_string(cfg_.benchmark_max_duration_s) + "]");
+    }
+  }
+
+  // 2. Validate optional per_stream list (existing stream ids only).
+  const auto ids = backend_->stream_ids();
+  std::vector<int> targets;  // stream indices, empty = all streams
+  if (body.isMember("per_stream")) {
+    if (!body["per_stream"].isArray()) {
+      return make_err(request_id, 400, "PARAM_JSON",
+                      "'per_stream' must be an array of stream ids");
+    }
+    for (const auto& id : body["per_stream"]) {
+      if (!id.isString()) {
+        return make_err(request_id, 400, "PARAM_JSON",
+                        "'per_stream' entries must be strings");
+      }
+      const int idx = find_stream_index(ids, id.asString());
+      if (idx < 0) {
+        return make_err(request_id, 404, "PARAM_STREAM",
+                        "unknown stream '" + id.asString() + "'");
+      }
+      targets.push_back(idx);
+    }
+  }
+
+  // 3. Single-flight: one measurement window at a time.
+  if (!benchmark_mu_.try_lock()) {
+    return make_err(request_id, 409, "BENCHMARK_BUSY",
+                    "a benchmark window is already running");
+  }
+  struct Unlock {
+    std::mutex& m;
+    bool armed = true;
+    ~Unlock() {
+      if (armed) m.unlock();
+    }
+  } unlock{benchmark_mu_};
+
+  // 4. Before snapshot: frame counters, latency watermark, scheduler state.
+  const auto summary_before = backend_->metrics_summary();
+  const uint64_t watermark_before = backend_->latency_watermark();
+  const auto sched_before = backend_->scheduler_status();
+  const auto sched_cfg_before = backend_->scheduler_config();
+  const uint64_t start_ms = mono_ms();
+  const uint64_t target_ms = start_ms + static_cast<uint64_t>(duration_s) * 1000;
+  uint64_t now = start_ms;
+  while (now < target_ms && !stopping_.load()) {
+    const uint64_t remain = target_ms - now;
+    std::this_thread::sleep_for(
+        std::chrono::milliseconds(remain > 1000 ? 1000 : remain));
+    now = mono_ms();
+  }
+  const uint64_t end_ms = now;
+
+  // 5. After snapshot.
+  const auto summary_after = backend_->metrics_summary();
+  const auto sched_after = backend_->scheduler_status();
+  const auto sched_cfg_after = backend_->scheduler_config();
+
+  // 6. Compose the report (only real measurements).
+  const double elapsed_sec =
+      static_cast<double>(end_ms - start_ms) / 1000.0;
+  const int min_frames = duration_s * 5 > 5 ? duration_s * 5 : 5;
+  Json::Value streams(Json::objectValue);
+  uint64_t global_frames_in = 0, global_frames_out = 0;
+  std::vector<uint32_t> global_pool;
+  for (size_t i = 0; i < summary_after.size(); ++i) {
+    if (!targets.empty() &&
+        std::find(targets.begin(), targets.end(), static_cast<int>(i)) ==
+            targets.end()) {
+      continue;
+    }
+    const auto& b = summary_before[i];
+    const auto& a = summary_after[i];
+    const uint64_t frames_in = a.input_frames - b.input_frames;
+    const uint64_t frames_out = a.output_frames - b.output_frames;
+    // Boundary effect: frames in flight when the window opens may be emitted
+    // inside it, so out can exceed in by a few frames.  Clamp to [0,1].
+    const int64_t dropped = static_cast<int64_t>(frames_in) -
+                            static_cast<int64_t>(frames_out);
+    const auto latency =
+        backend_->latency_stats_since(static_cast<int>(i), watermark_before);
+    const auto samples =
+        backend_->latency_samples_since(static_cast<int>(i), watermark_before);
+    Json::Value js;
+    js["frames_in"] = Json::Value::UInt64(frames_in);
+    js["frames_out"] = Json::Value::UInt64(frames_out);
+    js["input_fps"] = elapsed_sec > 0.0
+                          ? static_cast<double>(frames_in) / elapsed_sec
+                          : 0.0;
+    js["output_fps"] = elapsed_sec > 0.0
+                           ? static_cast<double>(frames_out) / elapsed_sec
+                           : 0.0;
+    js["drop_rate"] = frames_in > 0 && dropped > 0
+                          ? static_cast<double>(dropped) /
+                                static_cast<double>(frames_in)
+                          : 0.0;
+    Json::Value lj;
+    lj["samples"] = Json::Value::UInt64(latency.samples);
+    lj["avg_ms"] = latency.avg_ms;
+    lj["p50_ms"] = latency.p50_ms;
+    lj["p95_ms"] = latency.p95_ms;
+    lj["p99_ms"] = latency.p99_ms;
+    lj["max_ms"] = latency.max_ms;
+    js["latency"] = lj;
+    js["complete"] = frames_in >= static_cast<uint64_t>(min_frames);
+    streams[a.stream_id] = js;
+    global_frames_in += frames_in;
+    global_frames_out += frames_out;
+    global_pool.insert(global_pool.end(), samples.begin(), samples.end());
+  }
+
+  Json::Value data;
+  data["duration_s"] = duration_s;
+  data["elapsed_ms"] = Json::Value::UInt64(end_ms - start_ms);
+  data["started_at_ms"] = Json::Value::UInt64(start_ms);
+  data["ended_at_ms"] = Json::Value::UInt64(end_ms);
+  data["scheduler_state_before"] = sched_before.state;
+  data["scheduler_state_after"] = sched_after.state;
+  Json::Value tbl_b, tbl_a;
+  tbl_b["high"] = sched_cfg_before.enable ? sched_before.table_high : -1;
+  tbl_b["normal"] = sched_cfg_before.enable ? sched_before.table_normal : -1;
+  tbl_b["low"] = sched_cfg_before.enable ? sched_before.table_low : -1;
+  tbl_a["high"] = sched_cfg_after.enable ? sched_after.table_high : -1;
+  tbl_a["normal"] = sched_cfg_after.enable ? sched_after.table_normal : -1;
+  tbl_a["low"] = sched_cfg_after.enable ? sched_after.table_low : -1;
+  data["table_before"] = tbl_b;
+  data["table_after"] = tbl_a;
+  data["streams"] = streams;
+
+  const auto global = metrics::MetricsRegistry::compute_stats_from_us(global_pool);
+  Json::Value gj;
+  gj["samples"] = Json::Value::UInt64(global.samples);
+  gj["avg_ms"] = global.avg_ms;
+  gj["p50_ms"] = global.p50_ms;
+  gj["p95_ms"] = global.p95_ms;
+  gj["p99_ms"] = global.p99_ms;
+  gj["max_ms"] = global.max_ms;
+  gj["input_fps"] = elapsed_sec > 0.0
+                        ? static_cast<double>(global_frames_in) / elapsed_sec
+                        : 0.0;
+  const int64_t global_dropped =
+      static_cast<int64_t>(global_frames_in) -
+      static_cast<int64_t>(global_frames_out);
+  gj["drop_rate"] = global_frames_in > 0 && global_dropped > 0
+                        ? static_cast<double>(global_dropped) /
+                              static_cast<double>(global_frames_in)
+                        : 0.0;
+  data["global"] = gj;
+
+  // 7. Audit (read-only measurement, but every agent-relevant call is logged).
+  Json::Value args;
+  args["duration_s"] = duration_s;
+  if (!targets.empty()) {
+    Json::Value t(Json::arrayValue);
+    for (const int idx : targets) {
+      t.append(ids[static_cast<size_t>(idx)]);
+    }
+    args["per_stream"] = t;
+  }
+  audit(request_id, "benchmark", "", args, Json::Value(Json::objectValue),
+        Json::Value(Json::objectValue), true, "", "");
+  return make_ok(request_id, data);
 }
 
 std::string ControlServer::next_request_id() {

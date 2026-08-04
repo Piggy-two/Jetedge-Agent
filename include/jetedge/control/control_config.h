@@ -29,6 +29,11 @@ struct ControlConfig {
   int max_infer_interval = 5;        // infer_interval must be in [0,5]
   int restart_min_interval_ms = 30000;  // per-stream restart throttle
   int max_snapshots = 32;            // keep at most this many snapshot files
+
+  // POST /benchmark measurement window (Stage 12).
+  int benchmark_min_duration_s = 5;     // floor for duration_s
+  int benchmark_max_duration_s = 120;   // ceiling for duration_s
+  int benchmark_default_duration_s = 60;
 };
 
 }  // namespace control
