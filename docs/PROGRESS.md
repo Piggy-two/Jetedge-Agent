@@ -14,6 +14,7 @@
 - **阶段 7（Qwen + DeepSeek 异步分析）：已完成 ✓（2026-08-01）**——mock/故障注入/线上真实 API 三层验收全部通过；线上验收修复 Qwen markdown 围栏解析缺陷并切换模型（qwen3.6-flash / deepseek-v4-flash）
 - **阶段 8（RTSP 故障隔离与恢复）：已完成 ✓（2026-08-02）**——4 路 RTSP 冒烟（四路 10s 内 RUNNING、200s 零重连零失败）+ 10 轮 cam3 停/恢复故障注入（cam1/2/4 全程 0 stall / 0 reconnect / 0 failure，cam3 每轮自动恢复）+ FAILED 路径（6 次真实连续失败后重试停止）；本会话定位并修复 2 个缺陷：**watchdog tick 时间戳下溢假 stall**（now 循环开头捕获、前一流重建耗时后无符号下溢——cam4 每轮必误报）与**垂死 rtspsrc 陈旧错误重复计数**（健康流误 FAILED，元素身份校验修复）；ctest 4/4、事件 JSONL 8419 行 0 非法、RSS 收敛、EOS/Ctrl-C 干净。详见 `docs/stage8_rtsp.md`
 - **阶段 9（确定性 C++ 动态调度器）：已完成 ✓（2026-08-02）**——纯逻辑状态机 NORMAL|PRESSURE|THERMAL|CRITICAL|RECOVERY（滞回/最小保持/冷却/调整预算 2/120s/热优先级/CRITICAL 不增载/缺失指标不困死），状态表 {0,0,0}/{0,1,2}/{0,2,3}/{1,3,15}/三级逐级恢复；只读系统采样（/proc/stat、/proc/meminfo、thermal zone 最大温度）；decoder src 探针逐流间隔 drop（计数先于丢弃，RTSP watchdog 看全速率）；优先级保护（cam1 high 最晚被节流）。验收：单测 54 checks + ctest 5/5；实机 Run A 正常负载零干扰 / Run B 6×yes 烧机 PRESSURE 精确节流（cam2 15.0、cam4 10.0 fps = 30/2、30/3）+ 逐级恢复 / Run C 真实温度 THERMAL→CRITICAL 预算封顶管道零影响 / Run D 闭环验证并发现调参规则（滞回间隙须 > 热噪声 ~0.5°C）；JSONL 0 非法、RSS 收敛、全部干净退出。详见 `docs/stage9_scheduler.md`
+- **阶段 11（安全 Control API、配置快照、验证与回滚）：已完成 ✓（2026-08-04）**——白名单 HTTP Control API（自写 HTTP/1.1，零新依赖）；写操作统一流程（参数校验→安全门控 CRITICAL 拒升载→修改前快照→有界修改→审计→读回验证→失败自动回滚，写操作互斥串行）；快照 JSON 落盘（max 32 剪除）+ 回滚恢复全部字段；审计 JSONL（before/after/snapshot_id）；最近错误环形缓冲（bus ERROR/RTSP FAILED 喂入）；所有控制操作 g_main_context_invoke 派发到 GLib 主循环线程（有界等待、失败优雅降级）；运行时优先级 runtime_priorities_（调度 tier 映射改读它）。验收：单测 206 checks + ctest 6/6；实机 4 路 RTSP 全端点 curl（只读 6 类 + 写操作 7 类非法拒绝 + interval/priority/快照/回滚/restart 全过、cam4 interval=2 节流实机生效 ~80s、restart 恢复 RUNNING + 30s 节流、回滚恢复全部字段）；8080 被 Open WebUI 占用→CTL100 降级继续（API 故障不影响管道实机证据）；审计 6 条全 success；52,112 检测行 + 3,113 事件行 0 非法；RSS ~620 MiB 收敛；SIGINT 退出码 0。详见 `docs/stage11_control.md`
 
 > **阶段编号变更**：旧 `implementation_plan.md` 的阶段 2（四路 streammux）和阶段 3（TensorRT+Tracker+四路检测）已被 `README.md` 新方案重新组织。新方案 Stage 4 只做单路 TensorRT+nvinfer（不含 Tracker），四路检测和 Tracker 归入 Stage 5。
 
@@ -174,5 +175,6 @@
 - ~~Stage 8：RTSP 故障隔离与恢复~~ → 已完成，见 `docs/stage8_rtsp.md`
 - ~~Stage 9：确定性 C++ 动态调度器（NORMAL | PRESSURE | THERMAL | CRITICAL | RECOVERY，含自适应推理间隔）~~ → 已完成，见 `docs/stage9_scheduler.md`
 - ~~Stage 10：ftrace / CPU Affinity 分析~~ → 已完成，见 `docs/stage10_ftrace.md`
-- Control API、快照和回滚（Agent 前置）
+- ~~Stage 11：Control API、快照和回滚（Agent 前置）~~ → 已完成，见 `docs/stage11_control.md`
+- Agent 白名单工具调用、验证、审计和回滚（含 run_benchmark 端点）
 - INT8 PTQ 与精度回归

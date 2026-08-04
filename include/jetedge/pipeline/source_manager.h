@@ -82,6 +82,9 @@ class SourceManager {
   // Survives RTSP rebuilds (the SourceBin object is not replaced).
   void set_infer_interval(int idx, int interval);
 
+  // Current inference interval of source `idx` (Stage 11 control API).
+  int infer_interval(int idx) const;
+
   GstElement* streammux() const { return streammux_; }
 
  private:

@@ -386,6 +386,50 @@ bool load_streams_config(const std::string& path, StreamsConfig& config, std::st
       }
     }
 
+    // ---- Control section (optional, Stage 11) ------------------------------
+    if (root["control"]) {
+      const auto& c_node = root["control"];
+      if (c_node["enable"])
+        config.control.enable = c_node["enable"].as<bool>();
+      if (c_node["host"])
+        config.control.host = c_node["host"].as<std::string>();
+      if (c_node["port"]) {
+        const int v = c_node["port"].as<int>();
+        if (v < 1 || v > 65535) { error_out = "control.port must be in [1,65535]"; return false; }
+        config.control.port = v;
+      }
+      if (c_node["state_dir"]) {
+        const std::string v = c_node["state_dir"].as<std::string>();
+        if (v.empty()) { error_out = "control.state_dir must not be empty"; return false; }
+        config.control.state_dir = v;
+      }
+      if (c_node["max_body_bytes"]) {
+        const int v = c_node["max_body_bytes"].as<int>();
+        if (v < 256 || v > 1048576) { error_out = "control.max_body_bytes must be in [256,1048576]"; return false; }
+        config.control.max_body_bytes = static_cast<size_t>(v);
+      }
+      if (c_node["read_timeout_ms"]) {
+        const int v = c_node["read_timeout_ms"].as<int>();
+        if (v < 100 || v > 60000) { error_out = "control.read_timeout_ms must be in [100,60000]"; return false; }
+        config.control.read_timeout_ms = v;
+      }
+      if (c_node["max_infer_interval"]) {
+        const int v = c_node["max_infer_interval"].as<int>();
+        if (v < 1 || v > 60) { error_out = "control.max_infer_interval must be in [1,60]"; return false; }
+        config.control.max_infer_interval = v;
+      }
+      if (c_node["restart_min_interval_ms"]) {
+        const int v = c_node["restart_min_interval_ms"].as<int>();
+        if (v < 0 || v > 600000) { error_out = "control.restart_min_interval_ms must be in [0,600000]"; return false; }
+        config.control.restart_min_interval_ms = v;
+      }
+      if (c_node["max_snapshots"]) {
+        const int v = c_node["max_snapshots"].as<int>();
+        if (v < 1 || v > 1000) { error_out = "control.max_snapshots must be in [1,1000]"; return false; }
+        config.control.max_snapshots = v;
+      }
+    }
+
     // ---- Streams section ---------------------------------------------------
     const auto& streams_node = root["streams"];
     if (!streams_node || !streams_node.IsSequence()) {

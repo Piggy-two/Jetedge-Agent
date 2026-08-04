@@ -23,9 +23,9 @@
 ## 当前状态快照
 
 - 当前日期：2026-08-04
-- 已完成：Jetson 环境与远程开发基础、单路本地视频硬件解码、YOLO11s ONNX 导出验证、模型传输与 SHA256 一致性验收、**阶段 4（TensorRT FP16 Engine + 单路 nvinfer 检测验证）**、**阶段 5（四路检测 + Tracker + 结构化 JSONL + per-stream Metrics）**、**阶段 6（事件系统、事件去重和关键帧抽取）**、**阶段 7（Qwen + DeepSeek 异步分析）**、**阶段 8（RTSP 故障隔离与恢复）**、**阶段 9（确定性 C++ 动态调度器）**、**阶段 10（ftrace / CPU Affinity 分析：基线 70 线程自由漂移 → 解码线程每流钉核消除迁移、wake→run 尾部延迟 p99 45ms→1.5ms、端到端零回归；应用线程聚堆钉核证伪 revert；固化 `scripts/start_pipeline.sh`，详见 `docs/stage10_ftrace.md`）**
-- 当前阶段：**阶段 11 准备（未开始）——Control API、快照、验证、回滚（Agent 前置）**
-- 当前禁止提前开展：Agent 工具执行、INT8、事件引擎扩展（Control API 完成前）
+- 已完成：Jetson 环境与远程开发基础、单路本地视频硬件解码、YOLO11s ONNX 导出验证、模型传输与 SHA256 一致性验收、**阶段 4（TensorRT FP16 Engine + 单路 nvinfer 检测验证）**、**阶段 5（四路检测 + Tracker + 结构化 JSONL + per-stream Metrics）**、**阶段 6（事件系统、事件去重和关键帧抽取）**、**阶段 7（Qwen + DeepSeek 异步分析）**、**阶段 8（RTSP 故障隔离与恢复）**、**阶段 9（确定性 C++ 动态调度器）**、**阶段 10（ftrace / CPU Affinity 分析：基线 70 线程自由漂移 → 解码线程每流钉核消除迁移、wake→run 尾部延迟 p99 45ms→1.5ms、端到端零回归；应用线程聚堆钉核证伪 revert；固化 `scripts/start_pipeline.sh`，详见 `docs/stage10_ftrace.md`）**、**阶段 11（安全 Control API、快照、验证与回滚：自写 HTTP/1.1 白名单 API + §16 写操作统一流程（校验→安全门控→快照→执行→审计→读回验证→失败自动回滚）+ 快照/回滚 + 审计 JSONL + 最近错误环形缓冲；单测 206 checks + ctest 6/6；实机 4 路 RTSP 全端点验收、节流实机生效、回滚恢复全部字段、API 故障降级不影响管道，详见 `docs/stage11_control.md`）**
+- 当前阶段：**Agent 准备（未开始）——白名单工具调用、验证、审计和自动回滚（Control API 已完成，Agent 前置条件就绪）**
+- 当前禁止提前开展：Agent 工具执行、INT8、事件引擎扩展（Agent 阶段开始前）
 
 当前模型信息：
 
@@ -290,19 +290,21 @@ Agent 不参与逐帧决策，也不直接操作 DeepStream 内部对象。
 ### 当前阶段
 
 - [x] **阶段 9：确定性 C++ 动态调度器**（2026-08-02 验收通过）——纯逻辑状态机 NORMAL | PRESSURE | THERMAL | CRITICAL | RECOVERY（滞回/最小保持/冷却/调整预算/热优先级/CRITICAL 不增载/缺失指标不困死）、只读系统采样、decoder src 探针逐流推理间隔 drop（RTSP watchdog 看全速率）、优先级保护、状态表 NORMAL{0,0,0}/PRESSURE{0,1,2}/THERMAL{0,2,3}/CRITICAL{1,3,15}/RECOVERY 逐级恢复。验收：单测 54 checks + ctest 5/5；实机 Run A 零干扰 / Run B 烧机 PRESSURE 精确节流（cam2 15.0、cam4 10.0 fps）+ 逐级恢复 / Run C 真实温度 THERMAL→CRITICAL 预算封顶管道零影响 / Run D 闭环与调参规则（滞回间隙须 > 热噪声）。详见 `docs/stage9_scheduler.md`。
+- [x] **阶段 10：ftrace / CPU Affinity 分析**（2026-08-04 验收通过）——60s sched ftrace 基线（70 线程自由漂移、wake→run 尾部延迟 p99 45ms）→ 解码线程每流钉核（迁移率 0、尾部 p99 45.3→1.48ms、端到端零回归）→ 应用线程聚堆钉核证伪 revert；固化 `scripts/start_pipeline.sh`。详见 `docs/stage10_ftrace.md`。
+- [x] **阶段 11：安全 Control API、快照、验证与回滚**（2026-08-04 验收通过）——自写 HTTP/1.1 白名单 API（`control` 配置组，默认禁用）+ CLAUDE.md §16 写操作统一流程（参数校验→安全门控→修改前快照→有界修改→审计→读回验证→失败自动回滚）+ 快照/回滚 + 审计 JSONL + 最近错误环形缓冲；运行时优先级与主循环线程派发。验收：单测 206 checks + ctest 6/6；实机 4 路 RTSP 全端点 curl（非法输入 7 类全拒、interval/priority/快照/回滚/restart 全过、节流实机生效、回滚恢复全部字段、restart 30s 节流）、8080 被占→降级继续（API 故障不影响管道）、RSS 收敛、退出码 0。详见 `docs/stage11_control.md`。
 
 已批准但不属于当前阶段：
 
 - Agent 工具执行；
 - INT8；
-- Control API、快照和回滚；
 - 事件引擎扩展（关键帧异步写、ROI 裁剪）；
 - 大模型调用进入实时主链路。
 
 ### 后续阶段
 
 - [x] ftrace 和 CPU Affinity 分析（2026-08-04，`docs/stage10_ftrace.md`）；
-- [ ] Agent 白名单工具调用、验证、审计和回滚；
+- [x] Control API、快照和回滚（2026-08-04，`docs/stage11_control.md`）；
+- [ ] Agent 白名单工具调用、验证、审计和回滚（含 run_benchmark 端点）；
 - [ ] INT8 PTQ 与精度回归；
 - [ ] 稳定性测试、Demo 和项目包装。
 
@@ -947,6 +949,8 @@ Policy 校验候选工具，保存快照，执行低风险调整，重新 Benchm
 | `docs/architecture.md` | 系统架构设计 |
 | `docs/benchmark.md` | Benchmark 方法与结果 |
 | `docs/stage9_scheduler.md` | Stage 9 动态调度器验收报告 |
+| `docs/stage10_ftrace.md` | Stage 10 ftrace / CPU Affinity 验收报告 |
+| `docs/stage11_control.md` | Stage 11 安全 Control API、快照与回滚验收报告 |
 | `docs/agent_design.md` | Agent 状态机和工具设计 |
 | `docs/tool_api.md` | Control API 和工具协议 |
 | `docs/safety.md` | Agent 权限、验证和回滚 |

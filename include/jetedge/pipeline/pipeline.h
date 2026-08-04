@@ -7,12 +7,16 @@
 
 #pragma once
 
+#include <atomic>
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
 
 #include <gst/gst.h>
 
+#include "jetedge/control/control_backend.h"
+#include "jetedge/control/error_store.h"
 #include "jetedge/events/event_engine.h"
 #include "jetedge/events/event_writer.h"
 #include "jetedge/events/keyframe_writer.h"
@@ -29,7 +33,7 @@
 namespace jetedge {
 namespace pipeline {
 
-class Pipeline {
+class Pipeline : public control::ControlBackend {
  public:
   Pipeline() = default;
 
@@ -72,6 +76,31 @@ class Pipeline {
 
   // Per-stream metrics summary (Stage 5).
   std::vector<metrics::MetricsRegistry::StreamSummary> metrics_snapshot() const;
+
+  // ---- Stage 11: safe Control API backend -----------------------------------
+  // Implemented over the GStreamer/GLib main-loop thread: control threads are
+  // never allowed to touch pipeline state directly.  Ops that must read or
+  // write main-loop state are marshaled onto the main loop with a bounded
+  // wait; ops that fail to marshal return an error instead of hanging.
+  std::vector<std::string> stream_ids() const override;
+  std::vector<control::StreamStatus> stream_status() const override;
+  std::vector<metrics::MetricsRegistry::StreamSummary> metrics_summary() const override;
+  control::SchedulerStatus scheduler_status() const override;
+  scheduler::SchedulerConfig scheduler_config() const override;
+  std::vector<control::ErrorRecord> recent_errors(size_t limit) const override;
+  bool safety_state_allows() const override;
+  control::WriteResult set_infer_interval(int stream_idx, int interval) override;
+  control::WriteResult set_priority(int stream_idx,
+                                    pipeline::StreamPriority priority) override;
+  control::WriteResult restart_stream(int stream_idx) override;
+  control::ConfigSnapshot current_config_snapshot() const override;
+  control::WriteResult apply_snapshot(const control::ConfigSnapshot& snap) override;
+
+  // Record an error into the bounded error store (bus ERROR / RTSP watchdog /
+  // control write failures).  Thread-safe; serves GET /errors/recent.
+  void record_control_error(const std::string& level, const std::string& stream_id,
+                            const std::string& state, const std::string& operation,
+                            const std::string& error_code, const std::string& message);
 
   // ---- Stage 8 RTSP reconnect driver ---------------------------------------
   // Per-stream reconnect bookkeeping, all touched only from the GLib main
@@ -124,6 +153,15 @@ class Pipeline {
   // parent chain and matching our "src-<id>-*" element names.  -1 = not ours.
   int stream_index_from_object(GstObject* obj) const;
 
+  // ---- Stage 11 control helpers --------------------------------------------
+  // Run `fn` on the GLib main loop thread and wait (bounded).  Runs inline
+  // when already on the main loop thread or when the loop is not running.
+  // Returns false when the wait times out (control op must fail gracefully).
+  bool on_main_loop(const std::function<void()>& fn) const;
+
+  control::StreamStatus make_stream_status(size_t idx) const;
+  control::SchedulerStatus make_scheduler_status() const;
+
   GstElement* pipeline_ = nullptr;
   GstElement* sink_ = nullptr;
   GstElement* nvinfer_ = nullptr;
@@ -162,9 +200,18 @@ class Pipeline {
   scheduler::SchedulerConfig scheduler_config_;
   std::unique_ptr<scheduler::SchedulerPolicy> scheduler_;
   scheduler::SystemSampler sys_sampler_;
-  std::vector<StreamConfig> stream_configs_;    // priorities for tier mapping
+  std::vector<StreamConfig> stream_configs_;    // base stream configs
   std::vector<int> scheduler_intervals_;        // last applied per stream
   scheduler::SystemSample scheduler_last_sample_;  // for the periodic report
+
+  // Stage 11 control state.  runtime_priorities_ is the effective priority
+  // (control ops may change it; the scheduler tier mapping reads it instead
+  // of stream_configs_ priorities).  Touched only on the GLib main loop
+  // thread (control ops marshal there).
+  std::vector<StreamPriority> runtime_priorities_;
+  std::unique_ptr<control::ErrorStore> error_store_;
+  GThread* main_loop_thread_ = nullptr;
+  std::atomic<bool> loop_running_{false};
 };
 
 }  // namespace pipeline

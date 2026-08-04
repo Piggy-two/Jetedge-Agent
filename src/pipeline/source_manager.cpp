@@ -154,6 +154,13 @@ void SourceManager::set_infer_interval(int idx, int interval) {
   sources_[static_cast<size_t>(idx)]->set_infer_interval(interval);
 }
 
+int SourceManager::infer_interval(int idx) const {
+  if (idx < 0 || idx >= static_cast<int>(sources_.size())) {
+    return 0;
+  }
+  return sources_[static_cast<size_t>(idx)]->infer_interval();
+}
+
 bool SourceManager::rebuild_source(int idx, GstElement* pipeline) {
   if (idx < 0 || idx >= static_cast<int>(sources_.size())) {
     LOG_ERROR("source_mgr", "", "rebuild", "MGR010", "invalid source index %d", idx);

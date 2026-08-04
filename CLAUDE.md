@@ -9,9 +9,9 @@ Before any work, read these files in order:
 3. `docs/PROGRESS.md`
 4. `models/model_info.txt`
 
-Current scope is Stage 11 preparation only: Control API, snapshots, validation, rollback (per CLAUDE.md §16; Agent stage follows after). No Agent tool execution, INT8, or event-engine extensions while Stage 11 is pending.
+Current scope is Agent preparation only (per CLAUDE.md §16; the Control API, snapshots, validation, and rollback prerequisite — Stage 11 — is complete and accepted). No Agent tool execution, INT8, or event-engine extensions before the Agent stage work is explicitly requested.
 
-Stages 4-10 are complete and accepted (2026-08-01/04): single-stream inference (`docs/stage4` evidence in `docs/PROGRESS.md`), four-stream + tracker + metrics, events + keyframes (`docs/stage6_events.md`), Qwen + DeepSeek async analysis (`docs/stage7_llm.md`), RTSP fault isolation (`docs/stage8_rtsp.md`), deterministic adaptive scheduler (`docs/stage9_scheduler.md`), ftrace / CPU Affinity analysis (`docs/stage10_ftrace.md`).
+Stages 4-11 are complete and accepted (2026-08-01/04): single-stream inference (`docs/stage4` evidence in `docs/PROGRESS.md`), four-stream + tracker + metrics, events + keyframes (`docs/stage6_events.md`), Qwen + DeepSeek async analysis (`docs/stage7_llm.md`), RTSP fault isolation (`docs/stage8_rtsp.md`), deterministic adaptive scheduler (`docs/stage9_scheduler.md`), ftrace / CPU Affinity analysis (`docs/stage10_ftrace.md`), safe Control API + snapshots + validation + rollback (`docs/stage11_control.md`).
 
 Hard constraints:
 
@@ -22,8 +22,8 @@ Hard constraints:
 - Before every `git pull`, run `git status` and inspect uncommitted changes.
 - Do not overwrite uncommitted changes.
 - Do not force push.
-- Do not generate large Stage 10 to Stage 12 code early.
-- Do not add Agent, INT8, Control API, or event-engine extensions while Stage 10 is still pending.
+- Do not generate large Stage 11 to Stage 13 code early.
+- Do not add Agent, INT8, or event-engine extensions while Stage 11 (Control API) work is still pending.
 
 Read this file before planning, syncing, editing, building, running, or debugging anything in this repository.
 `README.md` contains the current stage snapshot and the cross-device workflow. Detailed plans and measured reports live under `docs/`.
@@ -61,7 +61,7 @@ The real-time pipeline must not depend on Qwen, DeepSeek, Python, the network, o
 
 ## 2. Current Approved Stage Snapshot
 
-As of 2026-08-02, the following work is accepted:
+As of 2026-08-04, the following work is accepted:
 
 ```text
 Jetson remote-development environment: complete
@@ -79,6 +79,8 @@ Event engine + dedup + keyframe extraction: complete (1194 valid JSONL events, 1
 Qwen + DeepSeek async analysis: complete (queue/circuit-breaker/schema, 375 mock + real API acceptance, docs/stage7_llm.md)
 RTSP fault isolation and recovery: complete (per-stream state machine, 10-round fault injection, docs/stage8_rtsp.md)
 Deterministic adaptive scheduler: complete (NORMAL|PRESSURE|THERMAL|CRITICAL|RECOVERY, 54 checks + 4 real runs, docs/stage9_scheduler.md)
+ftrace / CPU Affinity analysis: complete (decoder threads pinned per stream, wake→run p99 45ms→1.5ms, docs/stage10_ftrace.md)
+Safe Control API + snapshots + validation + rollback: complete (206 checks + ctest 6/6, docs/stage11_control.md)
 ```
 
 Current model artifact:
@@ -94,25 +96,26 @@ Jetson path: /home/seeed/JetEdge-Agent/models/yolo11s.onnx
 Metadata path: /home/seeed/JetEdge-Agent/models/model_info.txt
 ```
 
-The only approved implementation stage now is:
+The next approved implementation stage (not yet started):
 
 ```text
-Stage 10:
-1. ftrace / trace_marker / CPU Affinity analysis of the real pipeline (follow §13:
-   symptom → evidence → bottleneck hypothesis → controlled change → before/after → keep or revert).
-2. Report measured evidence under docs/; no optimization claim without before/after data.
+Agent stage:
+1. Whitelisted tool calling over the Stage 11 Control API (get_system_metrics /
+   get_stream_status / get_all_stream_status / get_scheduler_config / get_recent_errors /
+   set_stream_priority / set_infer_interval / restart_stream / run_benchmark / rollback_config).
+2. Goal-driven loop: observe → plan → save baseline → bounded change → verify with real
+   metrics → keep or auto-rollback (CLAUDE.md §16) → audit + report.
+3. Report measured evidence under docs/; only real tool results count as success.
 ```
 
-Out of scope for the current stage:
+Out of scope until the Agent stage is explicitly requested:
 
 - Agent tool execution;
 - INT8;
-- Control API, snapshots, rollback;
+- event-engine extensions;
 - custom CUDA post-processing;
-- scheduler / RTSP / LLM / event-engine extensions;
+- scheduler / RTSP / LLM / control-API extensions;
 - broad refactoring.
-
-Do not mark Stage 10 complete until the acceptance checks run on the Jetson.
 
 ---
 

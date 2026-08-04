@@ -7,6 +7,7 @@
 #include <string>
 #include <vector>
 
+#include "jetedge/control/control_config.h"
 #include "jetedge/events/event_types.h"
 #include "jetedge/inference/inference_config.h"
 #include "jetedge/llm/llm_config.h"
@@ -25,6 +26,7 @@ struct StreamsConfig {
   llm::LlmConfig llm;                 // Stage 7: async cloud analysis
   pipeline::RtspConfig rtsp;          // Stage 8: RTSP source + reconnect
   scheduler::SchedulerConfig scheduler;  // Stage 9: deterministic scheduler
+  control::ControlConfig control;     // Stage 11: safe Control API
   std::vector<pipeline::StreamConfig> streams;
 };
 

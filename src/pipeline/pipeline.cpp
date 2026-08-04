@@ -4,12 +4,16 @@
 #include "jetedge/pipeline/pipeline.h"
 
 #include <algorithm>
+#include <chrono>
+#include <condition_variable>
 #include <cstring>
 #include <ctime>
+#include <mutex>
 
 #include <json/json.h>
 
 #include "jetedge/common/logging.h"
+#include "jetedge/control/control_util.h"
 #include "jetedge/events/event_probe.h"
 #include "jetedge/inference/metadata_probe.h"
 
@@ -54,6 +58,14 @@ bool Pipeline::build(const std::vector<StreamConfig>& stream_configs,
   rtsp_config_ = rtsp_config;
   stream_configs_ = stream_configs;  // Stage 9: priorities for tier mapping
   scheduler_config_ = scheduler_config;
+
+  // Stage 11: effective priorities start at the configured values; control
+  // ops may change them at runtime (scheduler tier mapping reads these).
+  runtime_priorities_.resize(stream_configs.size());
+  for (size_t i = 0; i < stream_configs.size(); ++i) {
+    runtime_priorities_[i] = stream_configs[i].priority;
+  }
+  error_store_ = std::make_unique<control::ErrorStore>(64);
 
   // 1. Create pipeline bin.
   pipeline_ = gst_pipeline_new("jetedge-pipeline");
@@ -391,7 +403,12 @@ void Pipeline::run() {
     }
   }
 
+  // Stage 11: control ops marshal onto this thread while the loop runs.
+  main_loop_thread_ = g_thread_self();
+  loop_running_ = true;
   g_main_loop_run(loop_);
+  loop_running_ = false;
+  main_loop_thread_ = nullptr;
 
   LOG_INFO("pipeline", "stopping pipeline...");
   gst_element_set_state(pipeline_, GST_STATE_NULL);
@@ -756,6 +773,10 @@ void Pipeline::schedule_reconnect(size_t idx, const char* reason) {
               "%d consecutive failures (reason='%s') — FAILED, automatic "
               "reconnect stopped",
               w.policy.consecutive_failures(), reason);
+    record_control_error("ERROR", sid, "FAILED", "rtsp-watchdog", "RTSP006",
+                         std::string("FAILED after ") +
+                             std::to_string(w.policy.consecutive_failures()) +
+                             " consecutive failures (reason: " + reason + ")");
     return;
   }
   w.deadline_ms = mono_ms() + w.policy.backoff_ms();
@@ -876,12 +897,14 @@ void Pipeline::apply_scheduler_intervals() {
     return;
   }
   const auto& t = scheduler_->table();
-  for (size_t i = 0; i < stream_configs_.size() && i < scheduler_intervals_.size();
+  for (size_t i = 0; i < stream_configs_.size() && i < scheduler_intervals_.size() &&
+                    i < runtime_priorities_.size();
        ++i) {
-    const int interval = tier_interval(t, stream_configs_[i].priority);
+    const int interval = tier_interval(t, runtime_priorities_[i]);
     if (scheduler_intervals_[i] != interval) {
       LOG_INFO("scheduler", "stream=%s priority=%s interval %d → %d",
-               stream_configs_[i].id.c_str(), priority_str(stream_configs_[i].priority),
+               stream_configs_[i].id.c_str(),
+               priority_str(runtime_priorities_[i]),
                scheduler_intervals_[i], interval);
       source_mgr_->set_infer_interval(static_cast<int>(i), interval);
       scheduler_intervals_[i] = interval;
@@ -901,6 +924,291 @@ void Pipeline::log_scheduler_report() const {
            scheduler_last_sample_.cpu_pct, scheduler_last_sample_.mem_pct,
            scheduler_last_sample_.temp_c, scheduler_->adjustments_in_window(),
            scheduler_config_.max_adjustments_per_window, scheduler_->recovery_step());
+}
+
+// ---- Stage 11: Control API backend ------------------------------------------
+
+namespace {
+// Trampoline task for g_main_context_invoke_full: runs `fn` on the GLib main
+// loop thread, then signals completion.  The holder is freed by GLib's
+// destroy-notify; the shared_ptr keeps the task alive past a waiter timeout.
+struct MainLoopTask {
+  std::function<void()> fn;
+  std::mutex mu;
+  std::condition_variable cv;
+  bool done = false;
+};
+gboolean run_main_loop_task(gpointer data) {
+  auto* holder = static_cast<std::shared_ptr<MainLoopTask>*>(data);
+  const std::shared_ptr<MainLoopTask> task = *holder;  // keep alive
+  task->fn();
+  {
+    std::lock_guard<std::mutex> lock(task->mu);
+    task->done = true;
+  }
+  task->cv.notify_all();
+  return G_SOURCE_REMOVE;
+}
+void destroy_main_loop_task(gpointer data) {
+  delete static_cast<std::shared_ptr<MainLoopTask>*>(data);
+}
+}  // namespace
+
+bool Pipeline::on_main_loop(const std::function<void()>& fn) const {
+  // Inline when already on the main loop thread, or when the loop is not
+  // running yet / already stopped (control ops during startup or after the
+  // run loop are serialized by the caller's write mutex; the pipeline object
+  // is still fully valid in both windows).
+  if (g_thread_self() == main_loop_thread_ || !loop_running_.load() || !loop_) {
+    fn();
+    return true;
+  }
+  const auto task = std::make_shared<MainLoopTask>();
+  task->fn = fn;
+  auto* holder = new std::shared_ptr<MainLoopTask>(task);
+  g_main_context_invoke_full(g_main_loop_get_context(loop_), G_PRIORITY_DEFAULT,
+                             run_main_loop_task, holder, destroy_main_loop_task);
+  std::unique_lock<std::mutex> lock(task->mu);
+  const bool done =
+      task->cv.wait_for(lock, std::chrono::seconds(5), [&] { return task->done; });
+  if (!done) {
+    LOG_ERROR("pipeline", "", "control", "CTL010",
+              "%s", "control op timed out waiting for the main loop");
+  }
+  return done;
+}
+
+std::vector<std::string> Pipeline::stream_ids() const {
+  std::vector<std::string> out;
+  on_main_loop([&] {
+    if (source_mgr_) {
+      out = source_mgr_->stream_ids();
+    }
+  });
+  return out;
+}
+
+control::StreamStatus Pipeline::make_stream_status(size_t idx) const {
+  control::StreamStatus st;
+  if (!source_mgr_ || idx >= source_mgr_->stream_ids().size()) {
+    return st;
+  }
+  const auto ids = source_mgr_->stream_ids();
+  st.stream_id = ids[idx];
+  st.type = idx < stream_configs_.size() ? stream_configs_[idx].type : "file";
+  if (idx < runtime_priorities_.size()) {
+    st.priority = priority_str(runtime_priorities_[idx]);
+  } else {
+    st.priority = priority_str(StreamPriority::kNormal);
+  }
+  st.infer_interval = source_mgr_->infer_interval(static_cast<int>(idx));
+  st.frames = source_mgr_->frame_count(static_cast<int>(idx));
+  if (source_mgr_->is_rtsp_source(static_cast<int>(idx)) && idx < rtsp_watch_.size()) {
+    const RtspWatch& w = rtsp_watch_[idx];
+    st.state = stream_state_str(w.policy.state());
+    st.reconnect_count = static_cast<int>(w.policy.total_reconnects());
+    st.consecutive_failures = w.policy.consecutive_failures();
+    st.last_reason = w.policy.last_reason() ? w.policy.last_reason() : "";
+  } else {
+    st.state = "RUNNING";
+  }
+  return st;
+}
+
+std::vector<control::StreamStatus> Pipeline::stream_status() const {
+  std::vector<control::StreamStatus> out;
+  on_main_loop([&] {
+    const size_t n = source_mgr_ ? static_cast<size_t>(source_mgr_->source_count()) : 0;
+    out.reserve(n);
+    for (size_t i = 0; i < n; ++i) {
+      out.push_back(make_stream_status(i));
+    }
+  });
+  return out;
+}
+
+std::vector<metrics::MetricsRegistry::StreamSummary> Pipeline::metrics_summary() const {
+  return metrics_ ? metrics_->snapshot()
+                  : std::vector<metrics::MetricsRegistry::StreamSummary>{};
+}
+
+control::SchedulerStatus Pipeline::make_scheduler_status() const {
+  control::SchedulerStatus st;
+  st.enabled = scheduler_config_.enable;
+  if (scheduler_) {
+    st.state = scheduler_state_str(scheduler_->state());
+    const auto& t = scheduler_->table();
+    st.table_high = t.high;
+    st.table_normal = t.normal;
+    st.table_low = t.low;
+    st.adjustments = scheduler_->adjustments_in_window();
+    st.max_adjustments = scheduler_config_.max_adjustments_per_window;
+    st.recovery_step = scheduler_->recovery_step();
+  } else {
+    st.state = "DISABLED";
+  }
+  st.cpu_pct = scheduler_last_sample_.cpu_pct;
+  st.mem_pct = scheduler_last_sample_.mem_pct;
+  st.temp_c = scheduler_last_sample_.temp_c;
+  return st;
+}
+
+control::SchedulerStatus Pipeline::scheduler_status() const {
+  control::SchedulerStatus out;
+  on_main_loop([&] { out = make_scheduler_status(); });
+  return out;
+}
+
+scheduler::SchedulerConfig Pipeline::scheduler_config() const {
+  return scheduler_config_;  // set once at build, never mutated afterwards
+}
+
+std::vector<control::ErrorRecord> Pipeline::recent_errors(size_t limit) const {
+  return error_store_ ? error_store_->recent(limit) : std::vector<control::ErrorRecord>{};
+}
+
+bool Pipeline::safety_state_allows() const {
+  bool allowed = true;
+  on_main_loop([&] {
+    if (scheduler_ && scheduler_->state() == scheduler::SchedulerState::kCritical) {
+      allowed = false;
+    }
+  });
+  return allowed;
+}
+
+control::WriteResult Pipeline::set_infer_interval(int stream_idx, int interval) {
+  control::WriteResult r{true, "", ""};
+  on_main_loop([&] {
+    if (!source_mgr_ || stream_idx < 0 ||
+        stream_idx >= source_mgr_->source_count()) {
+      r = {false, "PARAM_STREAM", "stream index out of range"};
+      return;
+    }
+    source_mgr_->set_infer_interval(stream_idx, interval);
+    LOG_INFO("pipeline", "control: stream %d infer interval → %d",
+             stream_idx, interval);
+  });
+  return r;
+}
+
+control::WriteResult Pipeline::set_priority(int stream_idx,
+                                            StreamPriority priority) {
+  control::WriteResult r{true, "", ""};
+  on_main_loop([&] {
+    if (stream_idx < 0 || stream_idx >= static_cast<int>(runtime_priorities_.size())) {
+      r = {false, "PARAM_STREAM", "stream index out of range"};
+      return;
+    }
+    if (runtime_priorities_[stream_idx] == priority) {
+      return;  // no-op
+    }
+    runtime_priorities_[stream_idx] = priority;
+    LOG_INFO("pipeline", "control: stream %d priority → %s", stream_idx,
+             priority_str(priority));
+    if (scheduler_) {
+      apply_scheduler_intervals();  // apply the new tier immediately
+    }
+  });
+  return r;
+}
+
+control::WriteResult Pipeline::restart_stream(int stream_idx) {
+  control::WriteResult r{true, "", ""};
+  on_main_loop([&] {
+    if (!source_mgr_ || stream_idx < 0 ||
+        stream_idx >= source_mgr_->source_count()) {
+      r = {false, "PARAM_STREAM", "stream index out of range"};
+      return;
+    }
+    if (!source_mgr_->is_rtsp_source(stream_idx)) {
+      r = {false, "RTSP_ONLY", "restart is only supported for RTSP streams"};
+      return;
+    }
+    if (stream_idx >= static_cast<int>(rtsp_watch_.size()) ||
+        rtsp_watch_[stream_idx].policy.state() == StreamState::kFailed) {
+      r = {false, "RTSP_FAILED",
+           "stream is FAILED; automatic restart is disabled"};
+      return;
+    }
+    schedule_reconnect(static_cast<size_t>(stream_idx), "control-restart");
+    LOG_INFO("pipeline", "control: restart requested for stream %d", stream_idx);
+  });
+  return r;
+}
+
+control::ConfigSnapshot Pipeline::current_config_snapshot() const {
+  control::ConfigSnapshot snap;
+  on_main_loop([&] {
+    snap.scheduler_enabled = scheduler_config_.enable;
+    if (!source_mgr_) {
+      return;
+    }
+    const auto ids = source_mgr_->stream_ids();
+    for (size_t i = 0; i < ids.size(); ++i) {
+      control::StreamSnapshotEntry e;
+      e.stream_id = ids[i];
+      e.priority = i < runtime_priorities_.size() ? runtime_priorities_[i]
+                                                   : StreamPriority::kNormal;
+      e.infer_interval = source_mgr_->infer_interval(static_cast<int>(i));
+      snap.streams.push_back(std::move(e));
+    }
+  });
+  return snap;
+}
+
+control::WriteResult Pipeline::apply_snapshot(const control::ConfigSnapshot& snap) {
+  control::WriteResult r{true, "", ""};
+  on_main_loop([&] {
+    if (!source_mgr_) {
+      r = {false, "INTERNAL", "pipeline not built"};
+      return;
+    }
+    const auto ids = source_mgr_->stream_ids();
+    for (const auto& e : snap.streams) {
+      int idx = -1;
+      for (size_t i = 0; i < ids.size(); ++i) {
+        if (ids[i] == e.stream_id) {
+          idx = static_cast<int>(i);
+          break;
+        }
+      }
+      if (idx < 0) {
+        r = {false, "PARAM_STREAM", "stream '" + e.stream_id + "' not found"};
+        return;
+      }
+      if (idx < static_cast<int>(runtime_priorities_.size())) {
+        runtime_priorities_[idx] = e.priority;
+      }
+      source_mgr_->set_infer_interval(idx, e.infer_interval);
+    }
+    if (scheduler_) {
+      apply_scheduler_intervals();  // resync with the scheduler's table
+    }
+    LOG_INFO("pipeline", "control: snapshot '%s' applied (%zu streams)",
+             snap.snapshot_id.c_str(), snap.streams.size());
+  });
+  return r;
+}
+
+void Pipeline::record_control_error(const std::string& level,
+                                    const std::string& stream_id,
+                                    const std::string& state,
+                                    const std::string& operation,
+                                    const std::string& error_code,
+                                    const std::string& message) {
+  if (!error_store_) {
+    return;
+  }
+  control::ErrorRecord rec;
+  rec.ts_ms = control::wall_ms();
+  rec.level = level;
+  rec.stream_id = stream_id;
+  rec.state = state;
+  rec.operation = operation;
+  rec.error_code = error_code;
+  rec.message = message;
+  error_store_->add(std::move(rec));
 }
 
 int Pipeline::stream_index_from_object(GstObject* obj) const {
@@ -977,6 +1285,15 @@ gboolean Pipeline::on_bus_message(GstBus* /*bus*/, GstMessage* msg, gpointer use
         }
         LOG_WARN("pipeline", "stream-level error from %s: %s — scheduling reconnect",
                  GST_OBJECT_NAME(msg->src), error->message);
+        const auto all_ids =
+            self->source_mgr_ ? self->source_mgr_->stream_ids()
+                              : std::vector<std::string>{};
+        self->record_control_error(
+            "WARN",
+            stream_idx >= 0 && stream_idx < static_cast<int>(all_ids.size())
+                ? all_ids[stream_idx]
+                : "",
+            "RUNNING", "gst-error", "GST_STREAM_ERROR", error->message);
         self->schedule_reconnect(static_cast<size_t>(stream_idx), "gst-error");
       } else {
         LOG_ERROR("pipeline", "", "running", "GST_ERROR",
@@ -984,6 +1301,9 @@ gboolean Pipeline::on_bus_message(GstBus* /*bus*/, GstMessage* msg, gpointer use
         if (debug) {
           LOG_ERROR("pipeline", "", "running", "GST_ERROR", "debug: %s", debug);
         }
+        self->record_control_error("ERROR", "", "running", "gst-error", "GST_ERROR",
+                                   std::string(GST_OBJECT_NAME(msg->src)) + ": " +
+                                       error->message);
         g_main_loop_quit(self->loop_);
       }
       g_free(debug);
@@ -1023,6 +1343,10 @@ gboolean Pipeline::on_bus_message(GstBus* /*bus*/, GstMessage* msg, gpointer use
 // ---- Helpers ----------------------------------------------------------------
 
 void Pipeline::release_resources() {
+  // Control ops must not marshal onto a dying loop; the ControlServer is
+  // stopped by main() before the pipeline destructor runs, this is a
+  // belt-and-braces guard.
+  loop_running_ = false;
   if (report_timer_id_ != 0) {
     g_source_remove(report_timer_id_);
     report_timer_id_ = 0;
@@ -1105,6 +1429,7 @@ void Pipeline::release_resources() {
   event_engine_.reset();
   llm_router_.reset();
   scheduler_.reset();
+  error_store_.reset();
 
   if (loop_) {
     g_main_loop_unref(loop_);

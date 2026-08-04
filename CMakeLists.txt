@@ -28,6 +28,12 @@ set(JETEDGE_SOURCES
   apps/jetedge_server/main.cpp
   src/common/config_loader.cpp
   src/common/secrets.cpp
+  src/control/audit_log.cpp
+  src/control/control_server.cpp
+  src/control/error_store.cpp
+  src/control/http_server.cpp
+  src/control/param_validation.cpp
+  src/control/snapshot_store.cpp
   src/events/event_engine.cpp
   src/events/event_probe.cpp
   src/events/event_writer.cpp
@@ -51,6 +57,15 @@ set(JETEDGE_HEADERS
   include/jetedge/common/logging.h
   include/jetedge/common/config_loader.h
   include/jetedge/common/secrets.h
+  include/jetedge/control/audit_log.h
+  include/jetedge/control/control_backend.h
+  include/jetedge/control/control_config.h
+  include/jetedge/control/control_server.h
+  include/jetedge/control/control_util.h
+  include/jetedge/control/error_store.h
+  include/jetedge/control/http_server.h
+  include/jetedge/control/param_validation.h
+  include/jetedge/control/snapshot_store.h
   include/jetedge/events/event_engine.h
   include/jetedge/events/event_probe.h
   include/jetedge/events/event_types.h
@@ -135,9 +150,20 @@ add_executable(test_scheduler_policy tests/test_scheduler_policy.cpp
 target_include_directories(test_scheduler_policy PRIVATE ${CMAKE_SOURCE_DIR}/include)
 target_link_libraries(test_scheduler_policy PRIVATE Threads::Threads)
 
+add_executable(test_control_api tests/test_control_api.cpp
+               src/control/audit_log.cpp
+               src/control/control_server.cpp
+               src/control/error_store.cpp
+               src/control/http_server.cpp
+               src/control/param_validation.cpp
+               src/control/snapshot_store.cpp)
+target_include_directories(test_control_api PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(test_control_api PRIVATE Threads::Threads PkgConfig::JSONCPP)
+
 enable_testing()
 add_test(NAME event_engine COMMAND test_event_engine)
 add_test(NAME circuit_breaker COMMAND test_circuit_breaker)
 add_test(NAME prompt_manager COMMAND test_prompt_manager)
 add_test(NAME reconnect_policy COMMAND test_reconnect_policy)
 add_test(NAME scheduler_policy COMMAND test_scheduler_policy)
+add_test(NAME control_api COMMAND test_control_api)

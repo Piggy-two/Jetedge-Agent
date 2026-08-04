@@ -17,6 +17,7 @@
 #include "jetedge/common/config_loader.h"
 #include "jetedge/common/logging.h"
 #include "jetedge/common/secrets.h"
+#include "jetedge/control/control_server.h"
 #include "jetedge/pipeline/pipeline.h"
 
 namespace {
@@ -98,7 +99,27 @@ int main(int argc, char* argv[]) {
     return EXIT_FAILURE;
   }
 
+  // ---- Stage 11: safe Control API ------------------------------------------
+  // Started after build, stopped before the pipeline teardown.  A Control
+  // API failure must never stop the video pipeline: the server logs and the
+  // process continues without it.
+  jetedge::control::ControlServer control_server;
+  if (config.control.enable) {
+    if (!control_server.start(config.control, &pipeline)) {
+      LOG_ERROR("main", "", "init", "CTL100", "%s",
+                "control API failed to start — continuing without it");
+    } else {
+      LOG_INFO("main", "control API listening on %s:%d (state dir %s)",
+               config.control.host.c_str(), control_server.port(),
+               config.control.state_dir.c_str());
+    }
+  }
+
   pipeline.run();
+
+  // Stop the control server BEFORE the pipeline destructor: control ops
+  // marshal onto the GLib main loop thread, which no longer runs.
+  control_server.stop();
 
   // ---- Report --------------------------------------------------------------
   pipeline.print_stats();

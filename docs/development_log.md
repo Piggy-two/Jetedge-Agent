@@ -742,3 +742,42 @@ JSONL 逐行校验 0 非法（events 2287+2868、detections 43123+48795）；RSS
 - V4L2 与 src-camN 的流级配对按出现顺序轮转近似（未做唤醒关联精确配对）
 - PRESSURE/THERMAL 负载下钉核与调度器交互未测
 - 未做 trace_marker 应用级打点（sched 事件已足以下结论）；阶段时间戳留作后续
+
+## Stage 11：安全 Control API、配置快照、验证与回滚
+
+**日期**：2026-08-04。验收通过，详见 `docs/stage11_control.md`。
+
+### 1. 交付物
+
+- `src/control/` + `include/jetedge/control/`：param_validation（纯函数校验）/ error_store（64 条环形缓冲）/ snapshot_store（JSON 快照 + 剪除）/ audit_log（JSONL）/ http_server（自写 HTTP/1.1，零新依赖）/ control_server（路由 + §16 写流程）/ control_backend（接口，FakeBackend 可单测）
+- 端点：`/health` `/metrics/summary` `/streams[/<id>]` `/scheduler/config|state` `/errors/recent`；写：`infer-interval` `priority` `restart`（RTSP only + 30s 节流）`config/snapshot` `config/rollback`
+- 写操作统一流程（CLAUDE.md §16）：校验→安全门控（CRITICAL 拒升载）→修改前快照→执行→审计→读回验证→失败自动回滚；写操作互斥串行
+- Pipeline 控制面：runtime_priorities_（调度 tier 映射改读它）、g_main_context_invoke 派发主循环（5s 有界等待）、restart 走既有 RTSP 状态机、bus ERROR/RTSP FAILED 喂 error_store
+- `configs/streams_stage11.yaml`（control 组；本机 8080 被 Open WebUI 占用 → 8090）
+
+### 2. 实机验收（4 路 RTSP，~25 min）
+
+| 检查项 | 结果 |
+|---|---|
+| ctest | 6/6 PASS（test_control_api 206 checks 0 失败） |
+| 只读端点 | health/metrics/streams/scheduler 全过；errors/recent count=0（全程零管道错误） |
+| 非法写操作 | interval 6/-1/字符串/缺字段、非 JSON body、未知流/路径/方法 → 全部拒绝且零副作用 |
+| interval 修改 | cam4 0→2 success + 读回验证 + 快照落盘；节流实机生效（~80s 帧数少 ~1850） |
+| priority 修改 | cam2 normal→low success + 读回验证 |
+| 快照/回滚 | 显式快照 + 回滚恢复全部字段（cam2 low→normal、cam4 2→0）；未知快照 404 |
+| restart | cam1 → RECONNECTING → 12s 后自动 RUNNING；30s 内二次 → RESTART_THROTTLED |
+| 调度器交互 | 控制面间隔在当前状态持续到下次状态切换（文档化语义）；CRITICAL 升载被拒（单测） |
+| API 故障隔离 | 首启 8080 被 Open WebUI 占用 → CTL100 降级、管线照常运行 |
+| 数据/退出 | 检测 52,112 + 事件 3,113 行 0 非法；RSS ~620 MiB 收敛；SIGINT 退出码 0 |
+
+### 3. 本阶段修复
+
+- audit args/before/after 初版写为 JSON 字符串（消费端需二次解析）→ 内嵌真实 JSON 对象
+- 测试临时目录 `std::rand()` 确定性命名 + 未清理 → 跨运行文件累积、jsoncpp 崩溃 → remove_all + 取最后一行
+- 测试字节数错误（Content-Length 15 非 14/18）与安全门测试语义（已 high 再设 high 非升载）——测试修正
+
+### 4. 遗留
+
+- `run_benchmark` 端点推迟到 Agent 阶段（独立 benchmark 进程设计）
+- 审计 JSONL 为追加型，长稳运行需外部轮转（最终稳定性验收项）
+- 调度器启用时手动覆盖"持续至下次状态切换"语义仅在报告中说明
