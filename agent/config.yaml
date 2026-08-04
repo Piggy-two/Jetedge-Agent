@@ -1,0 +1,34 @@
+# JetEdge-Agent Stage 12 — agent runtime configuration.
+# All keys optional; defaults live in agent/config.py (DEFAULTS).
+
+# --- goal -------------------------------------------------------------------
+default_min_fps: 15.0          # FPS floor when the goal text has no number
+p95_reduction_ratio: 0.15      # relative improvement required (15%)
+p95_reduction_abs_ms: 8.0      # absolute improvement required (ms)
+p95_trivial_ms: 20.0           # already-below bound: no change needed
+fps_tolerance_ratio: 0.05      # cam1 floor tolerance (5%)
+drop_rate_tolerance_pp: 0.02   # allowed drop-rate worsening (pp)
+drop_rate_floor: 0.01
+
+# --- execution loop -----------------------------------------------------------
+observe_timeout_s: 15.0
+benchmark_duration_s: 60       # measurement window (server floor 5, ceiling 120)
+max_change_rounds: 2
+max_actions_per_round: 2
+max_infer_interval: 5
+deadline_s: 600                # hard deadline; on expiry → rollback + abort
+
+# --- deepseek (mirrors src/llm/llm_config.h defaults) ------------------------
+deepseek_endpoint: https://api.deepseek.com/v1/chat/completions
+deepseek_model: deepseek-v4-flash
+deepseek_timeout_s: 20.0
+deepseek_max_retries: 2
+deepseek_max_tokens: 512
+breaker_fail_threshold: 5
+breaker_reset_s: 30.0
+breaker_half_open_success: 2
+
+# --- secrets / reporting -------------------------------------------------------
+secrets_file: ~/.jetedge/secrets.env
+report_dir: logs/agent/reports
+audit_file: logs/agent/audit.jsonl

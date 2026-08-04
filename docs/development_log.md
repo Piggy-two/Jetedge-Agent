@@ -781,3 +781,42 @@ JSONL 逐行校验 0 非法（events 2287+2868、detections 43123+48795）；RSS
 - `run_benchmark` 端点推迟到 Agent 阶段（独立 benchmark 进程设计）
 - 审计 JSONL 为追加型，长稳运行需外部轮转（最终稳定性验收项）
 - 调度器启用时手动覆盖"持续至下次状态切换"语义仅在报告中说明
+
+## 2026-08-04 Stage 12：Agent 白名单工具调用、验证、审计与自动回滚
+
+### 1. 本阶段工作
+
+- **C++ 侧**:MetricsRegistry 增加 per-frame 推理段延迟跟踪(时钟注入、ring 4096/pending 256、watermark 窗口切分、desync/evicted 诊断计数);metadata_probe input/output 探针按 frame_num 配对;`POST /benchmark` 受控测量窗口端点(单飞、审计、stopping_ 优雅退出、global 跨流样本池、complete 标志);`/metrics/summary` 延迟 7 字段;control 配置组新增 benchmark 时长三字段。
+- **Python Agent**(`agent/`,独立进程):7 白名单工具 + DeepSeek 函数调用候选计划 + 确定性执行/验证/回滚 + LLM 故障降级 + CRITICAL 预检/写前复查/硬 deadline + 基线快照回滚 + 双审计链 + Markdown 报告。
+- **单测**:新增 `test_metrics_registry`(29 checks)、`test_control_api` 扩展至 255 checks;Python 41 用例(goal_parser/validator/planner/tool_registry/deepseek_client/executor)。
+
+### 2. 实机验收(4 路 RTSP)
+
+| 检查项 | 结果 |
+|---|---|
+| ctest | 7/7 PASS(control_api 255 + metrics_registry 29 checks) |
+| python unittest | 41/41 PASS |
+| 延迟字段 | 4 流 P95 45.4-46.0 ms / P50 36.1 / P99 56.8 / max 91.7,samples 1795-1982 |
+| benchmark 正路径 | 10s 窗口 1201 样本、global P95 43.5 ms、119.7 FPS、drop 0.00%、4 流 complete |
+| benchmark 负路径 | duration_s=0/300/str → 400 PARAM_DURATION;per_stream=["cam9"] → 404 PARAM_STREAM |
+| 排队语义 | 窗口内 GET /streams 排队 9007ms 后正常响应 |
+| 场景 A(LLM 在线) | before 43.3 → r1 42.4 → r2 41.7 ms(需 ≤36.8/35.3)→ 自动回滚 ×2,退出码 1 |
+| 场景 B(--no-llm) | cam1 FPS 保底 35:实测 29.8 → 变更后 26.1/24.9(batch 填充效应)< 33.25 → FPS+P95 双重失败自动回滚 |
+| 场景 C(故障注入) | SIGKILL agent:0 ERROR、4 流 RUNNING;未完成变更残留(独立进程固有权衡,已恢复) |
+| 双审计链 | agent 端 11 阶段;服务端 benchmark×20/snapshot×7/rollback×12/set_infer_interval×25 |
+| 数据/退出 | RSS ~620 MiB 收敛;SIGINT 退出码 0 |
+
+### 3. 本阶段修复与发现
+
+- **drop_rate 无符号下溢**(实机发现):窗口边界效应下 frames_out 差值 > frames_in → 天文数字 → 有符号差值 + clamp [0,1]
+- **LLM 候选清洗**:deepseek-v4-flash 首轮返回 3 条只读工具调用(观察请求)→ 清洗层拒绝非变更工具 → 确定性回退;system_prompt 明确"只返回变更动作"后返回空候选 → 行为正确(空候选 = 降级路径)
+- **executor 报告重复行**(rounds extend 逻辑)→ 逐行累积;round 2 递增 interval(1→2)生效
+- **`python3 agent/main.py` 直接运行缺 `agent` 包路径** → sys.path 注入
+- **batch 填充效应实测**:提高 2 流 interval 使 cam1 推理 FPS 从 29.8 掉到 26.1/24.9 —— 验证器 FPS 保底在真实负载下拦截了会损害目标流的变更
+
+### 4. 遗留
+
+- 保留路径(达标保留)实机未演示:43.3 ms 基线 + 双阈值下 2 流 interval≤2 不可达(41.7 ms);由单测 test_goal_met_keeps_config 覆盖
+- Agent 常驻 watch 模式、多目标场景解析、restart_stream/get_recent_errors 工具接入
+- 审计 JSONL 轮转(服务端与 Agent 端均为追加型)
+- agent 被杀时未完成变更残留(独立进程架构固有权衡)

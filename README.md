@@ -23,9 +23,9 @@
 ## 当前状态快照
 
 - 当前日期：2026-08-04
-- 已完成：Jetson 环境与远程开发基础、单路本地视频硬件解码、YOLO11s ONNX 导出验证、模型传输与 SHA256 一致性验收、**阶段 4（TensorRT FP16 Engine + 单路 nvinfer 检测验证）**、**阶段 5（四路检测 + Tracker + 结构化 JSONL + per-stream Metrics）**、**阶段 6（事件系统、事件去重和关键帧抽取）**、**阶段 7（Qwen + DeepSeek 异步分析）**、**阶段 8（RTSP 故障隔离与恢复）**、**阶段 9（确定性 C++ 动态调度器）**、**阶段 10（ftrace / CPU Affinity 分析：基线 70 线程自由漂移 → 解码线程每流钉核消除迁移、wake→run 尾部延迟 p99 45ms→1.5ms、端到端零回归；应用线程聚堆钉核证伪 revert；固化 `scripts/start_pipeline.sh`，详见 `docs/stage10_ftrace.md`）**、**阶段 11（安全 Control API、快照、验证与回滚：自写 HTTP/1.1 白名单 API + §16 写操作统一流程（校验→安全门控→快照→执行→审计→读回验证→失败自动回滚）+ 快照/回滚 + 审计 JSONL + 最近错误环形缓冲；单测 206 checks + ctest 6/6；实机 4 路 RTSP 全端点验收、节流实机生效、回滚恢复全部字段、API 故障降级不影响管道，详见 `docs/stage11_control.md`）**
-- 当前阶段：**Agent 准备（未开始）——白名单工具调用、验证、审计和自动回滚（Control API 已完成，Agent 前置条件就绪）**
-- 当前禁止提前开展：Agent 工具执行、INT8、事件引擎扩展（Agent 阶段开始前）
+- 已完成：Jetson 环境与远程开发基础、单路本地视频硬件解码、YOLO11s ONNX 导出验证、模型传输与 SHA256 一致性验收、**阶段 4（TensorRT FP16 Engine + 单路 nvinfer 检测验证）**、**阶段 5（四路检测 + Tracker + 结构化 JSONL + per-stream Metrics）**、**阶段 6（事件系统、事件去重和关键帧抽取）**、**阶段 7（Qwen + DeepSeek 异步分析）**、**阶段 8（RTSP 故障隔离与恢复）**、**阶段 9（确定性 C++ 动态调度器）**、**阶段 10（ftrace / CPU Affinity 分析：基线 70 线程自由漂移 → 解码线程每流钉核消除迁移、wake→run 尾部延迟 p99 45ms→1.5ms、端到端零回归；应用线程聚堆钉核证伪 revert；固化 `scripts/start_pipeline.sh`，详见 `docs/stage10_ftrace.md`）**、**阶段 11（安全 Control API、快照、验证与回滚：自写 HTTP/1.1 白名单 API + §16 写操作统一流程（校验→安全门控→快照→执行→审计→读回验证→失败自动回滚）+ 快照/回滚 + 审计 JSONL + 最近错误环形缓冲；单测 206 checks + ctest 6/6；实机 4 路 RTSP 全端点验收、节流实机生效、回滚恢复全部字段、API 故障降级不影响管道，详见 `docs/stage11_control.md`）**、**阶段 12（Agent 白名单工具调用、验证、审计与自动回滚：`POST /benchmark` 受控测量窗口 + per-frame 推理段延迟分位数（P50/P95/P99）+ 独立 Python Agent（7 工具、DeepSeek 低频候选计划、确定性执行/验证/回滚、LLM 故障降级）；ctest 7/7 + 41 用例；实机 4 路 RTSP 端到端：before 43.3ms → 变更 → 42.4/41.7ms 未达双阈值自动回滚、cam1 FPS 保底触发回滚（batch 填充效应）、SIGKILL 故障注入 0 ERROR、双审计链，详见 `docs/stage12_agent.md`）**
+- 当前阶段：**Stage 12（Agent）已完成并验收通过（2026-08-04）——白名单工具调用、验证、审计和自动回滚（含 run_benchmark 端点）**
+- 当前禁止提前开展：INT8、事件引擎扩展（Agent 阶段已完成）
 
 当前模型信息：
 
@@ -304,7 +304,7 @@ Agent 不参与逐帧决策，也不直接操作 DeepStream 内部对象。
 
 - [x] ftrace 和 CPU Affinity 分析（2026-08-04，`docs/stage10_ftrace.md`）；
 - [x] Control API、快照和回滚（2026-08-04，`docs/stage11_control.md`）；
-- [ ] Agent 白名单工具调用、验证、审计和回滚（含 run_benchmark 端点）；
+- [x] Agent 白名单工具调用、验证、审计和回滚（2026-08-04，含 run_benchmark 端点，`docs/stage12_agent.md`）；
 - [ ] INT8 PTQ 与精度回归；
 - [ ] 稳定性测试、Demo 和项目包装。
 
