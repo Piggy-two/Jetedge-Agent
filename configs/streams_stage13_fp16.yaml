@@ -1,0 +1,51 @@
+# JetEdge-Agent Stage 13 regression config — FP16 side.
+#
+# Copy of the Stage 5 file-mode config (four different-scene videos,
+# deterministic: no scheduler / events / llm groups, nvinfer interval=0)
+# with a distinct JSONL path.  Used together with streams_stage13_int8.yaml
+# for the FP16 vs INT8 accuracy regression: the ONLY difference between the
+# two configs is the inference config file and the output path.
+
+mux:
+  output_width: 1280
+  output_height: 720
+  batch_timeout_usec: 40000   # 40ms timeout for batch formation
+
+inference:
+  enable: true
+  config_file_path: configs/nvinfer_yolo11s_b4_fp16.txt
+  gie_unique_id: 1
+
+tracker:
+  enable: true
+  ll_lib_file: /opt/nvidia/deepstream/deepstream-7.1/lib/libnvds_nvmultiobjecttracker.so
+  ll_config_file: /opt/nvidia/deepstream/deepstream-7.1/samples/configs/deepstream-app/config_tracker_NvDCF_perf.yml
+  width: 960
+  height: 544
+  gpu_id: 0
+
+output:
+  jsonl_path: /home/seeed/projects/jetedge-agent/logs/regression_fp16_detections.jsonl
+  labels_file_path: /home/seeed/projects/jetedge-agent/configs/coco_labels.txt
+  fps_report_interval_sec: 5
+
+streams:
+  - id: cam1
+    type: file
+    uri: /opt/nvidia/deepstream/deepstream-7.1/samples/streams/sample_720p.h264
+    priority: high
+
+  - id: cam2
+    type: file
+    uri: /opt/nvidia/deepstream/deepstream-7.1/samples/streams/sample_office.mp4
+    priority: normal
+
+  - id: cam3
+    type: file
+    uri: /opt/nvidia/deepstream/deepstream-7.1/samples/streams/sample_walk.mov
+    priority: normal
+
+  - id: cam4
+    type: file
+    uri: /opt/nvidia/deepstream/deepstream-7.1/samples/streams/sample_ride_bike.mov
+    priority: low

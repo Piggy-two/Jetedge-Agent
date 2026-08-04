@@ -820,3 +820,64 @@ JSONL 逐行校验 0 非法（events 2287+2868、detections 43123+48795）；RSS
 - Agent 常驻 watch 模式、多目标场景解析、restart_stream/get_recent_errors 工具接入
 - 审计 JSONL 轮转(服务端与 Agent 端均为追加型)
 - agent 被杀时未完成变更残留(独立进程架构固有权衡)
+
+---
+
+## Stage 13 记录：INT8 PTQ 与精度回归（2026-08-04）
+
+### 1. 目标
+
+构建 YOLO11s batch=4 INT8 engine（校准数据可控可复现）、nvinfer 实机加载、FP16 同帧精度回归（阈值不达标回退）、性能 A-B-A。详见 `docs/stage13_int8.md`。
+
+### 2. 关键构建命令
+
+```bash
+# 校准数据（667 帧默认；--bus-stride 4 --walk-stride 1 → 991 帧密集实验）
+python3 scripts/extract_calib_frames.py [--out-dir /home/seeed/jetedge-calib]
+
+# 校准缓存（entropy2 或 minmax；--save-engine 仅 minmax 需要——trtexec 不兼容 MinMax 缓存格式）
+./build/calib_generator --onnx=.../yolo11s_dynamic.onnx --cache-out=...int8.calib \
+  --images=/home/seeed/jetedge-calib/raw --batch=4 --workspace-mb=2048 [--algo=minmax] [--save-engine=...]
+
+# INT8 engine（entropy2 路线，trtexec）
+/usr/src/tensorrt/bin/trtexec --onnx=.../yolo11s_dynamic.onnx \
+  --saveEngine=.../yolo11s_b4_384x640_int8.engine \
+  --int8 --fp16 --calib=.../yolo11s_b4_384x640_int8.calib \
+  --memPoolSize=workspace:2048 \
+  --minShapes=images:1x3x384x640 --optShapes=images:4x3x384x640 --maxShapes=images:4x3x384x640
+```
+
+### 3. 精度回归（file 模式，MinMax 667 帧 vs FP16）
+
+| 流 | 匹配率 f16→i8 | Δconf 均值/p95 | 类一致性 | 判定 |
+|---|---|---|---|---|
+| cam1 | 0.9470 | 0.0335/0.0964 | 0.9972 | 阈值 0.95 差 0.3pp |
+| cam2 | 0.7046 | 0.0454/0.0984 | 1.0000 | 不达标（低置信全丢） |
+| cam3 | 0.9957 | 0.0333/0.0576 | 1.0000 | 达标 |
+| cam4 | 0.9391 | 0.0173/0.0523 | 1.0000 | 阈值差 1.1pp |
+
+关键目标留存：bus 0.983 / car 0.960 / person 0.950。未匹配检测 82% 置信度 <0.4（量化与 pre-cluster 0.25 阈值边缘交互）。密集 991 帧校准无进一步改善。
+
+### 4. 性能（4 路 RTSP 60s 受控窗口，干净环境）
+
+| 指标 | FP16 | INT8 MinMax | 改善 |
+|---|---|---|---|
+| P50 | 36.82 ms | 29.40 ms | -20.2% |
+| P95 | 43.44 ms | 35.51 ms | -18.3% |
+| P99 | 46.59 ms | 38.01 ms | -18.4% |
+
+### 5. 本阶段修复与发现
+
+- **校准器绑定契约 2 缺陷**（实机）：单输入绑定=整个 batch 连续 buffer（非每 slot 一个）；cudaMalloc 大小须 ×batch。根因链条：executeV2 invalid argument → free() 崩溃 → _Map_base::at
+- **trtexec 10.3 无随机校准器**："Calibrator is not being used"——自定义校准器是 PTQ 唯一途径
+- **entropy2 系统性压缩检测置信度**（Δconf 0.34，cam1 检测 -69%，cam2 全灭）→ MinMax 解决（Δconf 0.034）
+- **检测头 FP16 混合精度证伪**：PWN 层融合无 FP16 候选，头层实际仍 INT8
+- **trtexec --calib 不兼容 MinMax 缓存格式** → 校准器 --save-engine 直接产出
+- **精度判定纪律**：匹配率 0.947/0.939 距保守阈值 0.95 差 0.3-1.1pp，按 §16 回退 FP16 交付，性能收益记录在案
+- 清理：Stage 11 验收残留实例（65443，4 小时，1.16 GB JSONL）优雅停止
+
+### 6. 遗留
+
+- 阈值 0.95 为保守初始值；业务可接受 0.94+（关键目标留存 0.95+）时 MinMax engine 可启用（换 engine 路径）
+- 低置信边缘框（0.25-0.4）的量化损失：可实验降低 pre-cluster 阈值或输出头前插 FP16 层（需图改造）
+- 校准策略（per-layer 混合精度、更多场景覆盖）留作后续

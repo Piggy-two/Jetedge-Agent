@@ -47,3 +47,29 @@ Engine: yolo11s_b4_384x640_fp16.engine
   size 22,278,268 B (21.2462 MiB), build time 494.2 s, bindings
   images 4x3x384x640 -> output0 4x84x5040 (opt profile), one DLA-fallback
   warning only, SHA256 136bd5fdf7eed35716e35337a3d941dd735c2e9c856c84b8be46cea78b06818d
+==================================================
+INT8 PTQ artifacts (Stage 13, built on Jetson, 2026-08-04)
+==================================================
+
+Calibration data (scripts/extract_calib_frames.py, 4 scenes, same
+preprocessing as nvinfer: non-uniform resize 640x384 + RGB, 1/255 at read):
+  sparse: /home/seeed/jetedge-calib/      667 frames (bus 181/office 163/walk 144/ride 179)
+  dense : /home/seeed/jetedge-calib-dense/ 991 frames (bus 361/walk 288, strides 4/1)
+
+Calibration caches (apps/calib_generator, standard TRT text format):
+  entropy2 sparse  yolo11s_b4_384x640_int8.calib            15810 B, SHA256 c8b980d20c0ca294ed8ee4d4bf433fad9caef65105a9d411e78860e02e8896a9
+  minmax  sparse  yolo11s_b4_384x640_int8_minmax.calib      15808 B, SHA256 eb081afc4f09d386d727cded81380b3e4af5d5f7e6edb5eef79449e0c0d0a33c
+  minmax  dense   yolo11s_b4_384x640_int8_minmax_dense.calib 15808 B, SHA256 55da6765a877ef2c1da1b455d641572529e75efb686aeba377da099a413fa006
+
+INT8 engines (bindings images 4x3x384x640 -> output0 4x84x5040; FP16+INT8):
+  yolo11s_b4_384x640_int8.engine           12.15 MiB, trtexec + entropy2 cache, 1009 s, SHA256 69a01eb281d3b70d72205c64a932bc227f6ab12bb3f8a7bdefe26957195adc7e
+  yolo11s_b4_384x640_int8_fp16head.engine  12.18 MiB, trtexec + /model.23/*:fp16 (ineffective, fused layers stay INT8), 783 s, SHA256 30cc960484da2a4c42a6519649be1300641d0b40dfdba2cf662de762a4ddd5b6
+  yolo11s_b4_384x640_int8_minmax.engine    12.16 MiB, calib_generator --algo=minmax, 780 s, SHA256 a5425d9d671dbcf52172b5402bdbc126f3b5f142fb465a8f7cc1a42da3713cf5
+  yolo11s_b4_384x640_int8_minmax_dense.engine 12.11 MiB, calib_generator --algo=minmax (991 frames), 940 s, SHA256 6fa25d9cf024f6ab172c7cc61c22f1af2ba96116d640aa78a19b341a2cdcc464
+
+Accuracy regression (vs FP16, same pipeline): match rate cam1 0.947 / cam2
+0.705 / cam3 0.996 / cam4 0.944 (conservative threshold 0.95 NOT met);
+dconf mean 0.034 (met), class consistency 0.998 (met), key-target
+retention bus 0.983 / car 0.960 / person 0.950.  Decision: keep FP16
+delivery (CLAUDE.md §16 rollback discipline); INT8 perf measured P95
+43.44 -> 35.51 ms (-18.3%) recorded in docs/stage13_int8.md.

@@ -103,6 +103,24 @@ set_target_properties(nvds_yolo11_parser PROPERTIES
   LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
 )
 
+# ---- INT8 calibration cache generator (Stage 13) ---------------------------
+# Runs one TensorRT build over extracted raw RGB frames with an
+# EntropyCalibrator2 and writes the standard TRT calibration cache; the
+# side-effect engine is discarded (the deliverable engine is built by
+# trtexec --int8 --calib=<cache>).
+add_executable(calib_generator apps/calib_generator/main.cpp
+               src/calib/image_reader.cpp)
+target_include_directories(calib_generator PRIVATE
+  ${CMAKE_SOURCE_DIR}/include
+  ${CUDA_INCLUDE}
+  /usr/include/aarch64-linux-gnu
+)
+# setInt8Calibrator is deprecated since TRT 10.1 but remains the standard
+# PTQ path (trtexec uses it); suppress the deprecation noise.
+target_compile_options(calib_generator PRIVATE -Wno-deprecated-declarations)
+target_link_directories(calib_generator PRIVATE /usr/local/cuda/lib64)
+target_link_libraries(calib_generator PRIVATE nvinfer nvonnxparser cudart)
+
 # ---- Executable ------------------------------------------------------------
 add_executable(jetedge_server ${JETEDGE_SOURCES} ${JETEDGE_HEADERS})
 target_include_directories(jetedge_server PRIVATE
@@ -166,6 +184,11 @@ add_executable(test_metrics_registry tests/test_metrics_registry.cpp
 target_include_directories(test_metrics_registry PRIVATE ${CMAKE_SOURCE_DIR}/include)
 target_link_libraries(test_metrics_registry PRIVATE Threads::Threads)
 
+add_executable(test_image_reader tests/test_image_reader.cpp
+               src/calib/image_reader.cpp)
+target_include_directories(test_image_reader PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(test_image_reader PRIVATE Threads::Threads)
+
 enable_testing()
 add_test(NAME event_engine COMMAND test_event_engine)
 add_test(NAME circuit_breaker COMMAND test_circuit_breaker)
@@ -174,3 +197,6 @@ add_test(NAME reconnect_policy COMMAND test_reconnect_policy)
 add_test(NAME scheduler_policy COMMAND test_scheduler_policy)
 add_test(NAME control_api COMMAND test_control_api)
 add_test(NAME metrics_registry COMMAND test_metrics_registry)
+add_test(NAME image_reader COMMAND test_image_reader)
+add_test(NAME accuracy_math COMMAND python3
+         ${CMAKE_SOURCE_DIR}/scripts/tests/test_accuracy_math.py)

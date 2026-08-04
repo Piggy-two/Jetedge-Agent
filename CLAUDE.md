@@ -9,9 +9,9 @@ Before any work, read these files in order:
 3. `docs/PROGRESS.md`
 4. `models/model_info.txt`
 
-Current scope is Agent preparation only (per CLAUDE.md §16; the Control API, snapshots, validation, and rollback prerequisite — Stage 11 — is complete and accepted). No Agent tool execution, INT8, or event-engine extensions before the Agent stage work is explicitly requested.
+Current scope is complete through Stage 13 (INT8 PTQ). Next approved stages: stability testing (2-hour), Demo, and project packaging — do not start those before they are explicitly requested. Do not start event-engine extensions without an explicit request.
 
-Stages 4-11 are complete and accepted (2026-08-01/04): single-stream inference (`docs/stage4` evidence in `docs/PROGRESS.md`), four-stream + tracker + metrics, events + keyframes (`docs/stage6_events.md`), Qwen + DeepSeek async analysis (`docs/stage7_llm.md`), RTSP fault isolation (`docs/stage8_rtsp.md`), deterministic adaptive scheduler (`docs/stage9_scheduler.md`), ftrace / CPU Affinity analysis (`docs/stage10_ftrace.md`), safe Control API + snapshots + validation + rollback (`docs/stage11_control.md`).
+Stages 4-13 are complete and accepted (2026-08-01/04): single-stream inference (`docs/stage4` evidence in `docs/PROGRESS.md`), four-stream + tracker + metrics, events + keyframes (`docs/stage6_events.md`), Qwen + DeepSeek async analysis (`docs/stage7_llm.md`), RTSP fault isolation (`docs/stage8_rtsp.md`), deterministic adaptive scheduler (`docs/stage9_scheduler.md`), ftrace / CPU Affinity analysis (`docs/stage10_ftrace.md`), safe Control API + snapshots + validation + rollback (`docs/stage11_control.md`), Agent loop (`docs/stage12_agent.md`), INT8 PTQ + accuracy regression (`docs/stage13_int8.md` — toolchain complete; accuracy below the conservative threshold, delivery stays FP16, measured INT8 perf benefit recorded).
 
 Hard constraints:
 
@@ -22,8 +22,8 @@ Hard constraints:
 - Before every `git pull`, run `git status` and inspect uncommitted changes.
 - Do not overwrite uncommitted changes.
 - Do not force push.
-- Do not generate large Stage 11 to Stage 13 code early.
-- Do not add Agent, INT8, or event-engine extensions while Stage 11 (Control API) work is still pending.
+- Do not generate large later-stage code early.
+- Do not add Agent, INT8, or event-engine extensions while the current stage's acceptance work is still pending.
 
 Read this file before planning, syncing, editing, building, running, or debugging anything in this repository.
 `README.md` contains the current stage snapshot and the cross-device workflow. Detailed plans and measured reports live under `docs/`.
@@ -81,6 +81,8 @@ RTSP fault isolation and recovery: complete (per-stream state machine, 10-round 
 Deterministic adaptive scheduler: complete (NORMAL|PRESSURE|THERMAL|CRITICAL|RECOVERY, 54 checks + 4 real runs, docs/stage9_scheduler.md)
 ftrace / CPU Affinity analysis: complete (decoder threads pinned per stream, wake→run p99 45ms→1.5ms, docs/stage10_ftrace.md)
 Safe Control API + snapshots + validation + rollback: complete (206 checks + ctest 6/6, docs/stage11_control.md)
+Agent tool calling + validation + audit + auto-rollback: complete (7 whitelist tools + POST /benchmark + P50/P95/P99, ctest 7/7 + 41 Python cases, docs/stage12_agent.md)
+INT8 PTQ + accuracy regression: complete as toolchain + measured report (custom calibrator entropy2/MinMax, 5 INT8 engine variants, FP16-vs-INT8 regression framework; accuracy below the conservative 0.95 threshold — delivery stays FP16, measured INT8 P95 -18.3% recorded, docs/stage13_int8.md)
 ```
 
 Current model artifact:
@@ -99,22 +101,18 @@ Metadata path: /home/seeed/JetEdge-Agent/models/model_info.txt
 The next approved implementation stage (not yet started):
 
 ```text
-Agent stage:
-1. Whitelisted tool calling over the Stage 11 Control API (get_system_metrics /
-   get_stream_status / get_all_stream_status / get_scheduler_config / get_recent_errors /
-   set_stream_priority / set_infer_interval / restart_stream / run_benchmark / rollback_config).
-2. Goal-driven loop: observe → plan → save baseline → bounded change → verify with real
-   metrics → keep or auto-rollback (CLAUDE.md §16) → audit + report.
-3. Report measured evidence under docs/; only real tool results count as success.
+Stability / packaging stage:
+1. 2-hour multi-stream stability run (RSS, JSONL validity, reconnect counters, exit code).
+2. Demo flows (Demo 1-4 from README §19) and project packaging.
 ```
 
-Out of scope until the Agent stage is explicitly requested:
+Out of scope until explicitly requested:
 
-- Agent tool execution;
-- INT8;
+- INT8 delivery (engine exists and is reproducible; accuracy below the conservative
+  threshold — re-enabling requires user approval and re-running the regression);
 - event-engine extensions;
 - custom CUDA post-processing;
-- scheduler / RTSP / LLM / control-API extensions;
+- scheduler / RTSP / LLM / control-API / Agent extensions;
 - broad refactoring.
 
 ---

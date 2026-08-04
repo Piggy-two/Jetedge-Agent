@@ -1,0 +1,40 @@
+# nvinfer configuration for YOLO11s INT8, batch=4 (Stage 13).
+#
+# INT8 engine built on this Jetson by trtexec from the batch-dynamic ONNX
+# with the calibration cache produced by apps/calib_generator (standard TRT
+# cache text format, first line TRT-100300-EntropyCalibration2):
+#   /home/seeed/JetEdge-Agent/models/yolo11s_b4_384x640_int8.engine
+# Calibration frames: /home/seeed/jetedge-calib/raw (scripts/extract_calib_frames.py)
+# Custom parser (built by CMake into build/):
+#   build/libnvds_yolo11_parser.so
+#
+# Only two fields differ from the FP16 config: model-engine-file and
+# network-mode (1 = INT8).  The calibration cache is referenced below purely
+# for provenance — with a prebuilt engine nvinfer does not use it
+# ("mandatory when engine files are not specified", DS sample config).
+
+[property]
+gpu-id=0
+model-engine-file=/home/seeed/JetEdge-Agent/models/yolo11s_b4_384x640_int8.engine
+labelfile-path=/home/seeed/projects/jetedge-agent/configs/coco_labels.txt
+batch-size=4
+process-mode=1
+model-color-format=0
+# 1/255: the model expects 0-1 normalized input; nvinfer feeds 0-255
+net-scale-factor=0.00392156862745098
+# 0=FP32, 1=INT8, 2=FP16
+network-mode=1
+num-detected-classes=80
+interval=0
+gie-unique-id=1
+# 2 = NMS clustering applied by nvinfer after the custom parser runs
+cluster-mode=2
+parse-bbox-func-name=NvDsInferParseCustomYolo11
+custom-lib-path=/home/seeed/projects/jetedge-agent/build/libnvds_yolo11_parser.so
+# Provenance only (engine is prebuilt; see header comment):
+int8-calib-file=/home/seeed/JetEdge-Agent/models/yolo11s_b4_384x640_int8.calib
+
+[class-attrs-all]
+topk=20
+nms-iou-threshold=0.5
+pre-cluster-threshold=0.25
