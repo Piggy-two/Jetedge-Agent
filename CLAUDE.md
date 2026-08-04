@@ -9,9 +9,9 @@ Before any work, read these files in order:
 3. `docs/PROGRESS.md`
 4. `models/model_info.txt`
 
-Current scope is Stage 10 only: ftrace / CPU Affinity performance analysis of the multi-stream pipeline (per CLAUDE.md §13 metric-first workflow: symptom → evidence → bottleneck → controlled change → before/after → keep or revert). No scheduler, RTSP, LLM, or event-engine extensions while Stage 10 is pending.
+Current scope is Stage 11 preparation only: Control API, snapshots, validation, rollback (per CLAUDE.md §16; Agent stage follows after). No Agent tool execution, INT8, or event-engine extensions while Stage 11 is pending.
 
-Stages 4-9 are complete and accepted (2026-08-01/02): single-stream inference (`docs/stage4` evidence in `docs/PROGRESS.md`), four-stream + tracker + metrics, events + keyframes (`docs/stage6_events.md`), Qwen + DeepSeek async analysis (`docs/stage7_llm.md`), RTSP fault isolation (`docs/stage8_rtsp.md`), deterministic adaptive scheduler (`docs/stage9_scheduler.md`).
+Stages 4-10 are complete and accepted (2026-08-01/04): single-stream inference (`docs/stage4` evidence in `docs/PROGRESS.md`), four-stream + tracker + metrics, events + keyframes (`docs/stage6_events.md`), Qwen + DeepSeek async analysis (`docs/stage7_llm.md`), RTSP fault isolation (`docs/stage8_rtsp.md`), deterministic adaptive scheduler (`docs/stage9_scheduler.md`), ftrace / CPU Affinity analysis (`docs/stage10_ftrace.md`).
 
 Hard constraints:
 

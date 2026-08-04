@@ -173,6 +173,6 @@
 - ~~Stage 7：Qwen + DeepSeek API、异步队列和降级策略~~ → 已完成，见 `docs/stage7_llm.md`
 - ~~Stage 8：RTSP 故障隔离与恢复~~ → 已完成，见 `docs/stage8_rtsp.md`
 - ~~Stage 9：确定性 C++ 动态调度器（NORMAL | PRESSURE | THERMAL | CRITICAL | RECOVERY，含自适应推理间隔）~~ → 已完成，见 `docs/stage9_scheduler.md`
-- ftrace 和 CPU Affinity 分析
+- ~~Stage 10：ftrace / CPU Affinity 分析~~ → 已完成，见 `docs/stage10_ftrace.md`
 - Control API、快照和回滚（Agent 前置）
 - INT8 PTQ 与精度回归

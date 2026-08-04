@@ -720,3 +720,25 @@ JSONL 逐行校验 0 非法（events 2287+2868、detections 43123+48795）；RSS
 - CRITICAL 低优先级为有界间隔 15（非完全停帧；live mux 停帧行为未实机验证）
 - 本机主动散热使负载下温度稳定 ~55.5°C，无法在不停管道前提下制造 >1°C 降温摆幅 → CRITICAL→RECOVERY 稳态单次恢复由单测 + Run B 同路径覆盖
 - 2 小时稳定性 / GPU 专项压力测试属最终验收项；下一阶段 ftrace / CPU Affinity（README 路线）
+
+## Stage 10：ftrace / CPU Affinity 性能分析
+
+**日期**：2026-08-04。验收通过，详见 `docs/stage10_ftrace.md`。
+
+### 1. 交付物
+
+- 60s sched ftrace 基线（before，无钉核）：70 线程自由漂移 6 核，迁移率 8-39%；wake→run（next_pid 配对）尾部延迟真实存在（rtpjitterbuffer p99 45.3ms、nvstreammux task0 p99 26.0ms）
+- 实验 1（keep）：8 个解码线程（4× src-camN-decode + 4× V4L2_DecThread）每流一对钉核 camN→cpuN-1 → 迁移率全 0，解码路径尾部 p99 45.3→1.48ms、26.0→2.24ms，端到端 29.3-29.7→29.6-29.8 fps 零回归
+- 实验 2（revert）：12 个应用线程聚堆钉 cpu4-5 → 内部竞争集中（20512 p99 161ms，cpu4-5 窗口全是被钉同类线程 + containerd 互抢），逐事件核对根因后撤销；应用线程为旁路任务不影响主链
+- `scripts/start_pipeline.sh`（start/stop/status）：启动管道 → 轮询检测 decode 线程 → 自动钉核（DeepStream 内部线程无法代码级 setaffinity，固化到脚本）
+
+### 2. 实机验收
+
+- 脚本全流程重启验证：cam1→cpu0、cam2→cpu1、cam3→cpu2、cam4→cpu3 每核 1 解码对，4 路 RUNNING，in=infer=out 无损
+- 3 份 60s trace（~21MB/份，/tmp 未入库）逐事件核对尾部延迟真实性，排除 wakeup→switch 误配对（首版配对含运行时间 100-400ms 假尾，改用 next_pid 配对剔除）
+
+### 3. 遗留
+
+- V4L2 与 src-camN 的流级配对按出现顺序轮转近似（未做唤醒关联精确配对）
+- PRESSURE/THERMAL 负载下钉核与调度器交互未测
+- 未做 trace_marker 应用级打点（sched 事件已足以下结论）；阶段时间戳留作后续

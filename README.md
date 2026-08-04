@@ -22,10 +22,10 @@
 
 ## 当前状态快照
 
-- 当前日期：2026-08-02
-- 已完成：Jetson 环境与远程开发基础、单路本地视频硬件解码、YOLO11s ONNX 导出验证、模型传输与 SHA256 一致性验收、**阶段 4（TensorRT FP16 Engine + 单路 nvinfer 检测验证）**、**阶段 5（四路检测 + Tracker + 结构化 JSONL + per-stream Metrics）**、**阶段 6（事件系统、事件去重和关键帧抽取）**、**阶段 7（Qwen + DeepSeek 异步分析）**、**阶段 8（RTSP 故障隔离与恢复）**、**阶段 9（确定性 C++ 动态调度器）**
-- 当前阶段：**阶段 10 准备（未开始）——ftrace / CPU Affinity 性能分析，见 `docs/stage9_scheduler.md` 遗留与 README §17**
-- 当前禁止提前开展：Agent 工具执行、INT8、Control API（ftrace / CPU Affinity 完成前）
+- 当前日期：2026-08-04
+- 已完成：Jetson 环境与远程开发基础、单路本地视频硬件解码、YOLO11s ONNX 导出验证、模型传输与 SHA256 一致性验收、**阶段 4（TensorRT FP16 Engine + 单路 nvinfer 检测验证）**、**阶段 5（四路检测 + Tracker + 结构化 JSONL + per-stream Metrics）**、**阶段 6（事件系统、事件去重和关键帧抽取）**、**阶段 7（Qwen + DeepSeek 异步分析）**、**阶段 8（RTSP 故障隔离与恢复）**、**阶段 9（确定性 C++ 动态调度器）**、**阶段 10（ftrace / CPU Affinity 分析：基线 70 线程自由漂移 → 解码线程每流钉核消除迁移、wake→run 尾部延迟 p99 45ms→1.5ms、端到端零回归；应用线程聚堆钉核证伪 revert；固化 `scripts/start_pipeline.sh`，详见 `docs/stage10_ftrace.md`）**
+- 当前阶段：**阶段 11 准备（未开始）——Control API、快照、验证、回滚（Agent 前置）**
+- 当前禁止提前开展：Agent 工具执行、INT8、事件引擎扩展（Control API 完成前）
 
 当前模型信息：
 
@@ -301,7 +301,7 @@ Agent 不参与逐帧决策，也不直接操作 DeepStream 内部对象。
 
 ### 后续阶段
 
-- [ ] ftrace 和 CPU Affinity 分析；
+- [x] ftrace 和 CPU Affinity 分析（2026-08-04，`docs/stage10_ftrace.md`）；
 - [ ] Agent 白名单工具调用、验证、审计和回滚；
 - [ ] INT8 PTQ 与精度回归；
 - [ ] 稳定性测试、Demo 和项目包装。
