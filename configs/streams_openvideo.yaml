@@ -83,6 +83,8 @@ control:
   enable: true
   host: 127.0.0.1
   port: 8091
+  cors: true
+  dashboard_file: web/dashboard.html
   state_dir: /home/seeed/projects/jetedge-agent/logs/control_openvideo
   max_body_bytes: 4096
   read_timeout_ms: 5000

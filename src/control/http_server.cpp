@@ -32,13 +32,16 @@ const char* status_text(int status) {
 }
 
 // Minimal JSON error response; always closes the connection.
-void send_error(int fd, int status, const char* error_code) {
+void send_error(int fd, int status, const char* error_code, bool cors) {
   const std::string body = std::string("{\"error_code\":\"") + error_code + "\"}";
-  const std::string resp =
+  std::string resp =
       "HTTP/1.1 " + std::to_string(status) + " " + status_text(status) + "\r\n"
       "Content-Type: application/json\r\n"
-      "Content-Length: " + std::to_string(body.size()) + "\r\n"
-      "Connection: close\r\n\r\n" + body;
+      "Content-Length: " + std::to_string(body.size()) + "\r\n";
+  if (cors) {
+    resp += "Access-Control-Allow-Origin: *\r\n";
+  }
+  resp += "Connection: close\r\n\r\n" + body;
   const ssize_t n = ::write(fd, resp.c_str(), resp.size());
   (void)n;  // connection is closed regardless; EPIPE is expected on reset
 }
@@ -50,13 +53,14 @@ HttpServer::~HttpServer() {
 }
 
 bool HttpServer::start(const std::string& host, int port, Handler handler,
-                       size_t max_body_bytes, int read_timeout_ms) {
+                       size_t max_body_bytes, int read_timeout_ms, bool cors) {
   if (running_) {
     return false;
   }
   handler_ = std::move(handler);
   max_body_bytes_ = max_body_bytes;
   read_timeout_ms_ = read_timeout_ms;
+  cors_ = cors;
 
   listen_fd_ = ::socket(AF_INET, SOCK_STREAM, 0);
   if (listen_fd_ < 0) {
@@ -162,7 +166,7 @@ void HttpServer::handle_connection(int fd) {
   while (head_end == std::string::npos) {
     if (buffer.size() > kMaxHeadBytes) {
       // Header section too large.
-      send_error(fd, 400, "HTTP_TOO_LARGE");
+      send_error(fd, 400, "HTTP_TOO_LARGE", cors_);
       ::close(fd);
       return;
     }
@@ -184,29 +188,55 @@ void HttpServer::handle_connection(int fd) {
     // draining the body (parse_request would reject a truncated body).
     const size_t eol = head.find("\r\n");
     if (eol == std::string::npos) {
-      send_error(fd, 400, "HTTP_PARSE");
+      send_error(fd, 400, "HTTP_PARSE", cors_);
+      ::close(fd);
       return;
     }
     std::string method;
     std::string path;
     std::string query;
     if (!parse_request_line(head.substr(0, eol), &method, &path, &query)) {
-      send_error(fd, 400, "HTTP_PARSE");
+      send_error(fd, 400, "HTTP_PARSE", cors_);
+      ::close(fd);
+      return;
+    }
+    if (method == "OPTIONS") {
+      // CORS preflight (Stage 15): no body, no handler call.  Only answered
+      // when CORS is enabled; a disabled server must not accept OPTIONS.
+      if (!cors_) {
+        send_error(fd, 405, "HTTP_METHOD", cors_);
+        ::close(fd);
+        return;
+      }
+      const std::string preflight =
+          "HTTP/1.1 200 OK\r\n"
+          "Access-Control-Allow-Origin: *\r\n"
+          "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n"
+          "Access-Control-Allow-Headers: Content-Type\r\n"
+          "Access-Control-Max-Age: 3600\r\n"
+          "Content-Length: 0\r\n"
+          "Connection: close\r\n\r\n";
+      const ssize_t n = ::write(fd, preflight.c_str(), preflight.size());
+      (void)n;
+      ::close(fd);
       return;
     }
     if (method != "GET" && method != "POST") {
-      send_error(fd, 405, "HTTP_METHOD");
+      send_error(fd, 405, "HTTP_METHOD", cors_);
+      ::close(fd);
       return;
     }
     std::map<std::string, std::string> headers;
     if (!parse_headers(head.substr(eol + 2), &headers)) {
-      send_error(fd, 400, "HTTP_PARSE");
+      send_error(fd, 400, "HTTP_PARSE", cors_);
+      ::close(fd);
       return;
     }
     content_length = parse_content_length(headers);
     if (content_length < 0 ||
         static_cast<uint64_t>(content_length) > max_body_bytes_) {
-      send_error(fd, 413, "HTTP_TOO_LARGE");
+      send_error(fd, 413, "HTTP_TOO_LARGE", cors_);
+      ::close(fd);
       return;
     }
   }
@@ -231,11 +261,14 @@ void HttpServer::handle_connection(int fd) {
     resp = HttpResponse{400, "application/json", "{\"error_code\":\"HTTP_PARSE\"}"};
   }
 
-  const std::string response =
+  std::string response =
       "HTTP/1.1 " + std::to_string(resp.status) + " " + status_text(resp.status) + "\r\n"
       "Content-Type: " + resp.content_type + "\r\n"
-      "Content-Length: " + std::to_string(resp.body.size()) + "\r\n"
-      "Connection: close\r\n\r\n" + resp.body;
+      "Content-Length: " + std::to_string(resp.body.size()) + "\r\n";
+  if (cors_) {
+    response += "Access-Control-Allow-Origin: *\r\n";
+  }
+  response += "Connection: close\r\n\r\n" + resp.body;
   const ssize_t n = ::write(fd, response.c_str(), response.size());
   (void)n;  // connection is closed regardless; EPIPE is expected on reset
   ::close(fd);

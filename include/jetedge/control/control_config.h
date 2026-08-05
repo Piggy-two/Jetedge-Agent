@@ -34,6 +34,10 @@ struct ControlConfig {
   int benchmark_min_duration_s = 5;     // floor for duration_s
   int benchmark_max_duration_s = 120;   // ceiling for duration_s
   int benchmark_default_duration_s = 60;
+
+  // Stage 15 web dashboard.
+  bool cors = false;                    // CORS headers + OPTIONS preflight
+  std::string dashboard_file = "web/dashboard.html";  // served at GET /dashboard
 };
 
 }  // namespace control

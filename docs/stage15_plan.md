@@ -1,7 +1,7 @@
-# Stage 15 计划：Web 可视化仪表盘与一键演示（planned，未实施）
+# Stage 15 计划：Web 可视化仪表盘与一键演示（P0 已完成，P1 待办）
 
-> 状态：**planned（2026-08-05 由用户显式请求立项）**。本文是计划，不是验收报告；
-> 完成标志是全部验收检查在 Jetson 实机通过并更新本文为验收记录。
+> 状态：**P0 已实现并实机验收（2026-08-05）**；P1（/events/recent、/keyframes、
+> demo_run.sh）仍为 planned。P0 由用户显式请求立项（2026-08-05）。
 
 ## 1. 目标
 
@@ -83,12 +83,24 @@ API 故障时降级显示（与 Stage 11 "API 故障不影响管道"的工程叙
 
 ## 5. 验收标准（全部 Jetson 实机）
 
-1. ctest 新增用例 PASS（CORS 预检/响应头、/events/recent 有界读、/keyframes 白名单与路径穿越拒绝）
-2. Windows 主机浏览器跨源访问 Jetson 仪表盘：4 路数据实时刷新，无 CORS 报错
-3. 操作面板实机演示：interval 变更 → 服务端审计出现记录 → 回滚 → 读回一致（沿 Stage 11 验收口径）
-4. `demo_run.sh` 一条命令完成启动→演示→清理，全程无 ERROR、`exit OK`
-5. 回归：检测/事件 JSONL 0 非法；RSS 收敛；EOS/Ctrl-C 干净
-6. 文档更新：README/PROGRESS 状态同步，本文转验收记录
+### P0 验收记录（2026-08-05，已通过）
+
+1. **ctest 9/9 全过**；test_control_api **270 checks 0 failures**（新增 CORS 预检/响应头/禁用拒绝、/dashboard 服务与缺失 404 共 13 checks；另修复 http_server 6 处 send_error 不关闭连接的潜伏缺陷——Connection: close 语义下服务器必须总是关闭，否则 read-until-EOF 客户端挂死）
+2. **OPTIONS 预检实机**：`curl -X OPTIONS /health` → 200 + ACAO: * + Allow-Methods: GET, POST, OPTIONS + Allow-Headers: Content-Type + Max-Age
+3. **跨源请求实机**：带 `Origin: http://example.com` 的 GET /streams → 200 + ACAO: *
+4. **GET /dashboard 实机**：11892 字节 text/html（web/dashboard.html）
+5. **数据端点实机**（文件源运行中）：/streams 4 路 RUNNING+优先级、/metrics/summary 每路 FPS、/scheduler/state NORMAL cpu 23.6% temp 58.6°C
+6. **写操作闭环实机**：interval 1→0 两次 set_infer_interval 全 success、快照 snap_…_9 → rollback success；审计 JSONL 4 条全 success 带 snapshot_id
+7. **回归**：检测/事件 JSONL 0 非法、0 ERROR、exit OK
+
+浏览器侧（Windows 主机）：打开 `http://<jetson-ip>:8091/dashboard` 或经 SSH 隧道
+`http://127.0.0.1:8091/dashboard` 即可（仪表盘与 API 同源，无需隧道配置 CORS）。
+
+### P1 验收标准（待实施）
+
+1. /events/recent 有界读、/keyframes 白名单与路径穿越拒绝
+2. `demo_run.sh` 一条命令完成启动→演示→清理，全程无 ERROR、`exit OK`
+3. 文档更新：README/PROGRESS 状态同步，本文转验收记录
 
 ## 6. 预计工作量
 

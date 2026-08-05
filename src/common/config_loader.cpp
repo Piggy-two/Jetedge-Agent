@@ -443,6 +443,14 @@ bool load_streams_config(const std::string& path, StreamsConfig& config, std::st
         if (v < 1 || v > 3600) { error_out = "control.benchmark_default_duration_s must be in [1,3600]"; return false; }
         config.control.benchmark_default_duration_s = v;
       }
+      if (c_node["cors"]) {
+        config.control.cors = c_node["cors"].as<bool>();
+      }
+      if (c_node["dashboard_file"]) {
+        const std::string v = c_node["dashboard_file"].as<std::string>();
+        if (v.empty()) { error_out = "control.dashboard_file must not be empty"; return false; }
+        config.control.dashboard_file = v;
+      }
       if (config.control.benchmark_min_duration_s >=
           config.control.benchmark_max_duration_s) {
         error_out = "control.benchmark_min_duration_s must be < benchmark_max_duration_s";

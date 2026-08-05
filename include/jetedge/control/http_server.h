@@ -25,7 +25,7 @@ namespace jetedge {
 namespace control {
 
 struct HttpRequest {
-  std::string method;   // "GET" | "POST"
+  std::string method;   // "GET" | "POST" | "OPTIONS"
   std::string path;     // decoded, e.g. "/streams/cam1/infer-interval"
   std::string query;    // raw query string (after '?'), empty when none
   std::string body;
@@ -50,8 +50,14 @@ class HttpServer {
   // Bind + listen + spawn the accept thread.  Returns false when the port
   // cannot be bound.  `handler` must be thread-safe (called from the accept
   // thread only, so single-threaded in practice).
+  //
+  // `cors` (Stage 15): when true, every response carries
+  // "Access-Control-Allow-Origin: *" and OPTIONS preflight requests are
+  // answered with the CORS headers.  Default false — the API surface stays
+  // minimal unless the web dashboard is explicitly enabled.
   bool start(const std::string& host, int port, Handler handler,
-             size_t max_body_bytes = 4096, int read_timeout_ms = 5000);
+             size_t max_body_bytes = 4096, int read_timeout_ms = 5000,
+             bool cors = false);
 
   // Stop accepting, close the listener, join the accept thread.  Idempotent.
   void stop();
@@ -91,6 +97,7 @@ class HttpServer {
   Handler handler_;
   size_t max_body_bytes_ = 4096;
   int read_timeout_ms_ = 5000;
+  bool cors_ = false;
 };
 
 }  // namespace control

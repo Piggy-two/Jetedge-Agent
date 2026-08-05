@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <fstream>
 #include <thread>
 #include <vector>
 
@@ -41,6 +42,35 @@ std::string json_str(const Json::Value& v) {
 
 }  // namespace
 
+// GET /dashboard — serve the static dashboard file (Stage 15).  A single
+// fixed path from config (no directory access, no user-supplied path) with
+// a 1 MiB size cap; the file is read per request so an edit shows on reload.
+HttpResponse ControlServer::serve_dashboard(const std::string& request_id) {
+  constexpr std::streamoff kMaxDashboardBytes = 1 << 20;
+  std::ifstream in(cfg_.dashboard_file, std::ios::binary);
+  if (!in) {
+    return make_err(request_id, 404, "DASHBOARD_FILE",
+                    "dashboard file not found: '" + cfg_.dashboard_file + "'");
+  }
+  in.seekg(0, std::ios::end);
+  const std::streamoff size = in.tellg();
+  if (size < 0 || size > kMaxDashboardBytes) {
+    return make_err(request_id, 413, "DASHBOARD_FILE",
+                    "dashboard file too large or unreadable");
+  }
+  in.seekg(0, std::ios::beg);
+  std::string body(static_cast<size_t>(size), '\0');
+  in.read(body.data(), size);
+  if (!in) {
+    return make_err(request_id, 500, "INTERNAL", "failed to read dashboard file");
+  }
+  HttpResponse resp;
+  resp.status = 200;
+  resp.content_type = "text/html; charset=utf-8";
+  resp.body = std::move(body);
+  return resp;
+}
+
 bool ControlServer::start(const ControlConfig& cfg, ControlBackend* backend) {
   cfg_ = cfg;
   backend_ = backend;
@@ -56,7 +86,7 @@ bool ControlServer::start(const ControlConfig& cfg, ControlBackend* backend) {
     return handle_request(r);
   };
   return http_.start(cfg_.host, cfg_.port, std::move(handler),
-                     cfg_.max_body_bytes, cfg_.read_timeout_ms);
+                     cfg_.max_body_bytes, cfg_.read_timeout_ms, cfg_.cors);
 }
 
 void ControlServer::stop() {
@@ -84,6 +114,9 @@ HttpResponse ControlServer::route(const HttpRequest& req) {
   const auto parts = split_path(req.path);
 
   if (req.method == "GET") {
+    if (parts == std::vector<std::string>{"dashboard"}) {
+      return serve_dashboard(request_id);
+    }
     if (parts == std::vector<std::string>{"health"}) {
       return make_ok(request_id, json_health());
     }

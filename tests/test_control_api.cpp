@@ -8,12 +8,17 @@
 //   - the full CLAUDE.md §16 write-op flow (validate → safety → snapshot →
 //     apply → audit → verify → auto-rollback) via ControlServer + FakeBackend
 
+#include <arpa/inet.h>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <netinet/in.h>
 #include <sstream>
 #include <string>
+#include <sys/socket.h>
+#include <unistd.h>
 #include <vector>
 
 #include <json/json.h>
@@ -235,10 +240,13 @@ struct ServerFixture {
   ControlServer server;
   FakeBackend backend;
 
-  explicit ServerFixture(std::vector<FakeBackend::Stream> streams) {
+  explicit ServerFixture(std::vector<FakeBackend::Stream> streams,
+                         bool cors = false,
+                         const std::string& dashboard_file = "") {
     dir = std::filesystem::temp_directory_path() /
           ("jetedge_test_control_" + std::to_string(std::rand()));
     std::filesystem::remove_all(dir);
+    std::filesystem::create_directories(dir);
     cfg.enable = true;
     cfg.port = 0;  // ephemeral; tests call handle_request directly
     cfg.state_dir = dir.string();
@@ -246,6 +254,14 @@ struct ServerFixture {
     // Fast benchmark windows: 1s default and floor.
     cfg.benchmark_min_duration_s = 1;
     cfg.benchmark_default_duration_s = 1;
+    // Stage 15: CORS + a real dashboard file (served at GET /dashboard).
+    cfg.cors = cors;
+    if (!dashboard_file.empty()) {
+      cfg.dashboard_file = dashboard_file;
+    } else {
+      cfg.dashboard_file = (dir / "dashboard.html").string();
+      std::ofstream(cfg.dashboard_file) << "<html>dash</html>";
+    }
     backend.streams = std::move(streams);
     const bool ok = server.start(cfg, &backend);
     CHECK(ok);
@@ -308,6 +324,91 @@ FakeBackend::Stream mk_stream(const std::string& id, const std::string& priority
   s.id = id;
   s.priority = priority;
   return s;
+}
+
+// ---- Stage 15: CORS + dashboard (real socket, socket-layer behavior) -------
+
+// One raw HTTP exchange over a real socket; returns the full response text.
+std::string raw_http(int port, const std::string& request) {
+  const int fd = ::socket(AF_INET, SOCK_STREAM, 0);
+  if (fd < 0) {
+    return "";
+  }
+  // Safety net: never block the suite on a broken server — 5 s cap per recv.
+  struct timeval tv;
+  tv.tv_sec = 5;
+  tv.tv_usec = 0;
+  ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+  struct sockaddr_in addr;
+  std::memset(&addr, 0, sizeof(addr));
+  addr.sin_family = AF_INET;
+  addr.sin_port = htons(static_cast<uint16_t>(port));
+  addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+  if (::connect(fd, reinterpret_cast<struct sockaddr*>(&addr), sizeof(addr)) != 0) {
+    ::close(fd);
+    return "";
+  }
+  const ssize_t nw = ::write(fd, request.data(), request.size());
+  if (nw < 0) {
+    ::close(fd);
+    return "";
+  }
+  std::string resp;
+  char buf[4096];
+  for (;;) {
+    const ssize_t n = ::recv(fd, buf, sizeof(buf), 0);
+    if (n <= 0) {
+      break;
+    }
+    resp.append(buf, static_cast<size_t>(n));
+  }
+  ::close(fd);
+  return resp;
+}
+
+bool has_header(const std::string& resp, const std::string& name,
+                const std::string& value) {
+  return resp.find(name + ": " + value) != std::string::npos;
+}
+
+static void test_cors_and_dashboard() {
+  {
+    // CORS enabled: preflight answered, headers on every response.
+    ServerFixture f({mk_stream("cam1", "high")}, /*cors=*/true);
+    const std::string pre =
+        raw_http(f.server.port(), "OPTIONS /health HTTP/1.1\r\nHost: x\r\n\r\n");
+    CHECK(pre.find("HTTP/1.1 200") != std::string::npos);
+    CHECK(has_header(pre, "Access-Control-Allow-Origin", "*"));
+    CHECK(has_header(pre, "Access-Control-Allow-Methods", "GET, POST, OPTIONS"));
+    CHECK(has_header(pre, "Access-Control-Allow-Headers", "Content-Type"));
+
+    const std::string health =
+        raw_http(f.server.port(), "GET /health HTTP/1.1\r\nHost: x\r\n\r\n");
+    CHECK(has_header(health, "Access-Control-Allow-Origin", "*"));
+    CHECK(health.find("\"success\":true") != std::string::npos);
+
+    // GET /dashboard serves the configured file as text/html.
+    const HttpResponse dash = f.get("/dashboard");
+    CHECK_EQ(dash.status, 200);
+    CHECK(dash.content_type.find("text/html") != std::string::npos);
+    CHECK(dash.body == "<html>dash</html>");
+
+    // Missing dashboard file → 404 with a clear error code.
+    std::filesystem::remove(f.cfg.dashboard_file);
+    const HttpResponse miss = f.get("/dashboard");
+    CHECK_EQ(miss.status, 404);
+    CHECK(f.response_error_code(miss) == "DASHBOARD_FILE");
+  }
+  {
+    // CORS disabled (default): OPTIONS rejected, no CORS headers at all.
+    ServerFixture f({mk_stream("cam1", "high")}, /*cors=*/false);
+    const std::string pre =
+        raw_http(f.server.port(), "OPTIONS /health HTTP/1.1\r\nHost: x\r\n\r\n");
+    CHECK(pre.find("HTTP/1.1 405") != std::string::npos);
+    const std::string health =
+        raw_http(f.server.port(), "GET /health HTTP/1.1\r\nHost: x\r\n\r\n");
+    CHECK(health.find("Access-Control-Allow-Origin") == std::string::npos);
+  }
 }
 
 // Read all non-empty lines of a file.
@@ -888,6 +989,7 @@ int main() {
   test_snapshot_store();
   test_audit_log();
   test_http_parse();
+  test_cors_and_dashboard();
   test_read_endpoints();
   test_write_flow_success();
   test_write_flow_invalid_params();

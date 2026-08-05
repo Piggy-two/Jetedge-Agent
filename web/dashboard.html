@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<!--
+  JetEdge-Agent Stage 15 dashboard — zero-dependency static page.
+  Polls the Control API (same origin by default; ?api=http://jetson:8091 to
+  point at a remote device) and renders live system state + the safe write
+  panel (CLAUDE.md §16 flow: validate → snapshot → apply → audit → verify).
+
+  Endpoints used (all read-only except the explicit control buttons):
+    GET /health  GET /streams  GET /metrics/summary  GET /scheduler/state
+    GET /errors/recent
+    POST /streams/<id>/infer-interval  POST /streams/<id>/priority
+    POST /config/snapshot  POST /config/rollback
+-->
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>JetEdge-Agent 仪表盘</title>
+<style>
+  :root { --bg:#0f1419; --panel:#161d26; --line:#26303c; --text:#d7e1ec;
+          --dim:#8ba0b4; --ok:#3ddc84; --warn:#ffb547; --bad:#ff5d5d;
+          --accent:#4da3ff; }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  body { background:var(--bg); color:var(--text);
+         font:14px/1.5 "SF Mono", Consolas, Menlo, monospace; padding:16px; }
+  header { display:flex; align-items:center; gap:16px; flex-wrap:wrap;
+           margin-bottom:14px; }
+  h1 { font-size:18px; letter-spacing:1px; }
+  .lamp { width:14px; height:14px; border-radius:50%; display:inline-block;
+          background:var(--dim); }
+  .lamp.NORMAL { background:var(--ok); }
+  .lamp.PRESSURE { background:var(--warn); }
+  .lamp.THERMAL { background:#ff8c42; }
+  .lamp.CRITICAL { background:var(--bad); animation:blink 1s infinite; }
+  .lamp.RECOVERY { background:var(--accent); }
+  @keyframes blink { 50% { opacity:.3; } }
+  .pill { background:var(--panel); border:1px solid var(--line);
+          padding:4px 10px; border-radius:12px; color:var(--dim); }
+  .pill b { color:var(--text); }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(340px,1fr));
+          gap:12px; }
+  .panel { background:var(--panel); border:1px solid var(--line);
+           border-radius:8px; padding:12px; }
+  .panel h2 { font-size:12px; color:var(--dim); letter-spacing:2px;
+              margin-bottom:10px; text-transform:uppercase; }
+  table { width:100%; border-collapse:collapse; }
+  th, td { text-align:left; padding:4px 6px; border-bottom:1px solid var(--line); }
+  th { color:var(--dim); font-weight:normal; font-size:12px; }
+  .st { font-weight:bold; }
+  .st.RUNNING { color:var(--ok); } .st.CONNECTING { color:var(--accent); }
+  .st.RECONNECTING { color:var(--warn); } .st.FAILED { color:var(--bad); }
+  .st.OFFLINE { color:var(--dim); } .st.DEGRADED { color:var(--warn); }
+  .bar { background:#0b0f14; border-radius:3px; height:10px; overflow:hidden; }
+  .bar > div { height:100%; }
+  .lat { display:grid; grid-template-columns:48px 1fr 44px 44px; gap:6px;
+         align-items:center; margin:4px 0; font-size:12px; }
+  .err { color:var(--bad); font-size:12px; padding:2px 0; }
+  .err .dim { color:var(--dim); }
+  .ctl { display:flex; gap:8px; align-items:center; flex-wrap:wrap;
+         margin:6px 0; }
+  input, select { background:#0b0f14; color:var(--text); border:1px solid var(--line);
+                  border-radius:4px; padding:4px 8px; font:inherit; width:110px; }
+  button { background:var(--accent); color:#04121f; border:none; border-radius:4px;
+           padding:5px 12px; font:inherit; font-weight:bold; cursor:pointer; }
+  button:hover { filter:brightness(1.15); }
+  button:disabled { opacity:.4; cursor:default; }
+  button.danger { background:var(--bad); color:#fff; }
+  button.plain { background:var(--panel); color:var(--dim); border:1px solid var(--line); }
+  .result { font-size:12px; color:var(--dim); white-space:pre-wrap;
+            border-top:1px dashed var(--line); margin-top:8px; padding-top:6px;
+            max-height:120px; overflow:auto; }
+  .result.ok { color:var(--ok); } .result.bad { color:var(--bad); }
+  #conn { font-size:12px; color:var(--dim); }
+  #conn.ok { color:var(--ok); } #conn.bad { color:var(--bad); }
+</style>
+</head>
+<body>
+<header>
+  <h1>JETEDGE-AGENT</h1>
+  <span id="conn">连接中…</span>
+  <span class="pill">调度 <b id="schedState">-</b></span>
+  <span class="pill">CPU <b id="cpuPct">-</b>%</span>
+  <span class="pill">内存 <b id="memPct">-</b>%</span>
+  <span class="pill">温度 <b id="tempC">-</b>°C</span>
+  <span class="pill">调整 <b id="adj">-</b></span>
+  <button class="plain" onclick="poll(true)">刷新</button>
+</header>
+
+<div class="grid">
+  <section class="panel">
+    <h2>流状态</h2>
+    <table><thead><tr><th>流</th><th>状态</th><th>优先级</th><th>FPS</th>
+      <th>帧数</th><th>间隔</th><th>重连</th></tr></thead>
+      <tbody id="streamRows"></tbody></table>
+  </section>
+
+  <section class="panel">
+    <h2>推理延迟（输入→输出，ms）</h2>
+    <div id="latency"></div>
+  </section>
+
+  <section class="panel">
+    <h2>最近错误</h2>
+    <div id="errors">无</div>
+  </section>
+
+  <section class="panel">
+    <h2>安全操作面板（§16：快照 → 变更 → 验证 → 回滚）</h2>
+    <div id="ctlList"></div>
+    <div class="ctl" style="margin-top:10px">
+      <button id="snapBtn" onclick="snapshot()">保存快照</button>
+      <button id="rollBtn" class="danger" onclick="rollback()">回滚到最近快照</button>
+      <span class="pill">最近快照 <b id="lastSnap">-</b></span>
+    </div>
+    <div class="result" id="ctlResult">（操作结果与审计回执显示在这里）</div>
+  </section>
+</div>
+
+<script>
+"use strict";
+// API base: same origin when served via GET /dashboard; ?api=http://host:port
+// overrides (the server sends Access-Control-Allow-Origin:*).
+const API = new URLSearchParams(location.search).get("api") || "";
+
+const $ = id => document.getElementById(id);
+const esc = s => String(s == null ? "" : s).replace(/[&<>"']/g,
+  c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+
+async function getJson(path) {
+  const r = await fetch(API + path);
+  const j = await r.json();
+  if (!j.success) throw new Error(j.error_code + ": " + (j.error || ""));
+  return j.data;
+}
+
+let lastSnapshotId = null;
+const ops = new Map();  // stream_id -> ops log (for audit display)
+
+function schedLamp(state) {
+  return '<span class="lamp ' + esc(state) + '"></span>';
+}
+
+async function poll(force) {
+  const results = await Promise.allSettled([
+    getJson("/health"), getJson("/streams"), getJson("/metrics/summary"),
+    getJson("/scheduler/state"), getJson("/errors/recent"),
+  ]);
+  const conn = $("conn");
+  const ok = results.every(r => r.status === "fulfilled");
+  conn.textContent = ok ? "已连接" : "API 不可达（管道不受影响）";
+  conn.className = ok ? "ok" : "bad";
+  if (!ok) return;
+
+  const [, streams, metrics, sched, errors] = results.map(r =>
+    r.status === "fulfilled" ? r.value : {});
+
+  // ---- scheduler header ----
+  $("schedState").textContent = sched.state || "-";
+  $("cpuPct").textContent = sched.cpu_pct != null ? sched.cpu_pct.toFixed(1) : "-";
+  $("memPct").textContent = sched.mem_pct != null ? sched.mem_pct.toFixed(1) : "-";
+  $("tempC").textContent = sched.temp_c != null ? sched.temp_c.toFixed(1) : "-";
+  $("adj").textContent = sched.adjustments + "/" + sched.max_adjustments;
+
+  // ---- stream rows ----
+  const ms = (metrics.streams || []).reduce((m, s) => (m[s.stream_id] = s, m), {});
+  $("streamRows").innerHTML = (streams.streams || []).map(s => {
+    const m = ms[s.stream_id] || {};
+    return "<tr><td>" + esc(s.stream_id) + "</td>" +
+      "<td class='st " + esc(s.state) + "'>" + schedLamp(s.state) + " " + esc(s.state) + "</td>" +
+      "<td>" + esc(s.priority) + "</td>" +
+      "<td>" + (m.latest_output_fps != null ? m.latest_output_fps.toFixed(1) : "-") + "</td>" +
+      "<td>" + (m.output_frames != null ? Number(m.output_frames).toLocaleString() : "-") + "</td>" +
+      "<td>" + esc(s.infer_interval) + "</td>" +
+      "<td>" + esc(s.reconnect_count) + "</td></tr>";
+  }).join("") || "<tr><td colspan=7>无流</td></tr>";
+
+  // ---- latency bars (max p99 across streams scales the bars) ----
+  const lat = (metrics.streams || []).filter(s => s.lat_samples > 0);
+  const maxP99 = Math.max(1, ...lat.map(s => s.lat_p99_ms || 0));
+  $("latency").innerHTML = lat.length ? lat.map(s => {
+    const bar = p => "<div class='bar'><div style='width:" +
+      Math.max(2, Math.round((p / maxP99) * 100)) + "%;background:var(--accent)'></div></div>";
+    return "<div class='lat'><span>" + esc(s.stream_id) + "</span>" + bar(s.lat_p99_ms || 0) +
+      "<span>p95 " + (s.lat_p95_ms || 0).toFixed(1) + "</span>" +
+      "<span>p99 " + (s.lat_p99_ms || 0).toFixed(1) + "</span></div>";
+  }).join("") : "<span class='dim'>无延迟样本（短流可能无数据）</span>";
+
+  // ---- errors ----
+  const errs = errors.errors || [];
+  $("errors").innerHTML = errs.length ? errs.slice(-10).reverse().map(e =>
+    "<div class='err'>" + esc(new Date(e.ts_ms).toLocaleTimeString()) +
+    " <b>" + esc(e.stream_id || "*") + "</b> " + esc(e.code || "") +
+    "<span class='dim'> " + esc(e.message || "") + "</span></div>").join("")
+    : "<span class='dim'>无</span>";
+
+  // ---- control panel ----
+  $("ctlList").innerHTML = (streams.streams || []).map(s =>
+    "<div class='ctl'><b>" + esc(s.stream_id) + "</b>" +
+    "<select data-s='"+esc(s.stream_id)+"' data-k='priority'>" +
+      ["high","normal","low"].map(p => "<option" + (p === s.priority ? " selected" : "") + ">" + p + "</option>").join("") +
+    "</select>" +
+    "<input data-s='" + esc(s.stream_id) + "' data-k='interval' type='number' min='0' max='5' value='" + esc(s.infer_interval) + "' title='推理间隔（帧）'>" +
+    "<button onclick='applyCtl(\"" + esc(s.stream_id) + "\",\"priority\")'>改优先级</button>" +
+    "<button onclick='applyCtl(\"" + esc(s.stream_id) + "\",\"interval\")'>改间隔</button>" +
+    "</div>").join("") || "无流";
+}
+
+async function postJson(path, body) {
+  const r = await fetch(API + path, {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify(body),
+  });
+  return r.json();
+}
+
+function showResult(j, what) {
+  const el = $("ctlResult");
+  const ok = j.success === true;
+  el.className = "result " + (ok ? "ok" : "bad");
+  el.textContent = what + " → " + (ok ? "success" : j.error_code) +
+    (ok ? " (snapshot_id=" + (j.snapshot_id || "-") + ", 已验证)" : " " + (j.error || ""));
+  if (ok && j.snapshot_id) {
+    lastSnapshotId = j.snapshot_id;
+    $("lastSnap").textContent = lastSnapshotId;
+  }
+}
+
+async function applyCtl(streamId, kind) {
+  const el = document.querySelector("[data-s='" + streamId + "'][data-k='" + kind + "']");
+  const body = kind === "priority" ? {priority: el.value} : {interval: Number(el.value)};
+  try {
+    const j = await postJson("/streams/" + streamId + "/" +
+      (kind === "priority" ? "priority" : "infer-interval"), body);
+    showResult(j, streamId + " " + kind + "=" + JSON.stringify(body));
+    poll();
+  } catch (e) { showResult({success:false, error_code:"FETCH", error: e.message}, streamId); }
+}
+
+async function snapshot() {
+  try {
+    const j = await postJson("/config/snapshot", {reason: "dashboard-manual"});
+    showResult(j, "snapshot");
+    poll();
+  } catch (e) { showResult({success:false, error_code:"FETCH", error: e.message}, "snapshot"); }
+}
+
+async function rollback() {
+  if (!lastSnapshotId) {
+    showResult({success:false, error_code:"NO_SNAPSHOT", error:"先保存快照"}, "rollback");
+    return;
+  }
+  if (!confirm("回滚到 " + lastSnapshotId + "？（写操作将审计并读回验证）")) return;
+  try {
+    const j = await postJson("/config/rollback", {snapshot_id: lastSnapshotId});
+    showResult(j, "rollback");
+    poll();
+  } catch (e) { showResult({success:false, error_code:"FETCH", error: e.message}, "rollback"); }
+}
+
+poll();
+setInterval(poll, 2000);
+</script>
+</body>
+</html>

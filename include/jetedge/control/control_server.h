@@ -17,6 +17,7 @@
 // client or a hung request never touches the real-time pipeline.
 //
 // Endpoints:
+//   GET  /dashboard                  → static web dashboard (Stage 15)
 //   GET  /health                     → {"status":"ok"}
 //   GET  /metrics/summary            → per-stream frame/FPS summary
 //   GET  /streams                    → per-stream runtime status
@@ -86,6 +87,7 @@ class ControlServer {
                         const char* error_code, const std::string& message);
 
   // ---- read handlers -------------------------------------------------------
+  HttpResponse serve_dashboard(const std::string& request_id);
   Json::Value json_health() const;
   Json::Value json_metrics_summary() const;
   Json::Value json_stream_status(const std::string& stream_id,
