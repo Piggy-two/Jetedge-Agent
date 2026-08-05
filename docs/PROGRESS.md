@@ -5,6 +5,7 @@
 ## 当前结论
 
 - **阶段 14（稳定性测试、Demo 与项目包装）：已完成 ✓（2026-08-05）**——2 小时 4 路 RTSP 连续运行（7208 s、87.4 万帧、每路 ~30 fps 全程稳定、P50 36.5/P95 43.5/P99 47.0ms 零漂移、RSS 629.6→635.0 MiB +0.86% 收敛、温度 63.5°C、调度 NORMAL ×120/120、0 意外重连 0 失败、检测 388.8 万 + 事件 17.8 万行 JSONL 逐行 0 非法、SIGINT exit OK）；Demo 1-4 实机演示（故障恢复 / Qwen 事件复核 / DeepSeek 性能诊断 / 安全 Agent 双回滚）；**发现并修复 DeepSeek 空响应缺陷**（deepseek-v4-flash 默认推理占满 512 token 预算 → content 为空 → `thinking` 禁用参数接线 + 回归测试 6a/6b，服务端与 Agent 同步修复）；打包（`docs/stage14_stability.md`、`docs/demo.md`、`docs/resume_summary.md`、3 个新脚本、3 个新配置）。**全部 14 个阶段完成。** 详见 `docs/stage14_stability.md`
+- 开源视频复用性验证（2026-08-05）：已完成 ✓——4 个 intel-iot-devkit 开源视频（CC-BY 4.0，432p+音轨，~17.6 MB）零代码改动直接跑通检测/跟踪/事件/调度/控制面（帧数与时长精确对应、JSONL 0 非法、0 ERROR、exit OK）；可疑检测（cell phone/boat/tv/chair）经 ORT FP32 逐帧交叉验证全部归因于模型本身；详见 `docs/openvideo_validation.md`
 - 阶段 0（环境核查）：已完成 ✓
 - 阶段 1（单路硬件解码）：已完成 ✓
 - 阶段 3（YOLO11s ONNX 导出、验证、传输与 SHA256 一致性验收）：已完成 ✓

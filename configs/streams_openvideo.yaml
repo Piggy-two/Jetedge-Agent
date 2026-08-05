@@ -1,0 +1,119 @@
+# JetEdge-Agent reusability verification — 4 open-source videos (local file mode).
+#
+# Purpose: demonstrate pipeline generality with data the pipeline has never
+# seen.  The ONLY functional differences from configs/streams_stage14.yaml
+# (2-hour stability run) are:
+#   - rtsp.enable: false (file sources need no RTSP watchdog/reconnect)
+#   - streams[]: type=file, uri -> 4 open-source videos from
+#     intel-iot-devkit/sample-videos (CC-BY 4.0, downloaded 2026-08-05,
+#     /home/seeed/jetedge-openvideos/, outside Git)
+#   - output/event/control paths -> logs/openvideo_*
+# Everything else (scheduler thresholds, event classes/zones, tracker, control
+# API, inference config) is byte-identical to the Stage 14 acceptance config.
+#
+# Videos (432p H.264, hardware-decode path filesrc->qtdemux->h264parse->
+# nvv4l2decoder):
+#   cam1 person-bicycle-car-detection.mp4 (12 fps, 54.0 s)
+#   cam2 car-detection.mp4               (12.5 fps, 30.2 s)
+#   cam3 people-detection.mp4            (12 fps, 49.7 s)
+#   cam4 one-by-one-person-detection.mp4 (10 fps, 139.4 s)
+
+rtsp:
+  enable: false
+
+mux:
+  output_width: 1280
+  output_height: 720
+  batch_timeout_usec: 40000
+
+inference:
+  enable: true
+  config_file_path: configs/nvinfer_yolo11s_b4_fp16.txt
+  gie_unique_id: 1
+
+tracker:
+  enable: true
+  ll_lib_file: /opt/nvidia/deepstream/deepstream-7.1/lib/libnvds_nvmultiobjecttracker.so
+  ll_config_file: /opt/nvidia/deepstream/deepstream-7.1/samples/configs/deepstream-app/config_tracker_NvDCF_perf.yml
+  width: 960
+  height: 544
+  gpu_id: 0
+
+output:
+  jsonl_path: /home/seeed/projects/jetedge-agent/logs/openvideo_detections.jsonl
+  labels_file_path: /home/seeed/projects/jetedge-agent/configs/coco_labels.txt
+  fps_report_interval_sec: 5
+
+events:
+  enable: true
+  jsonl_path: /home/seeed/projects/jetedge-agent/logs/openvideo_events.jsonl
+  keyframe_dir: /home/seeed/projects/jetedge-agent/logs/keyframes_openvideo
+  max_keyframes: 50
+  jpeg_quality: 85
+  disappear_grace_frames: 15
+  count_threshold: 3
+  count_hysteresis: 1
+  classes: [0, 1, 2, 3, 5, 7]
+  zones:
+    - name: road
+      stream_id: cam1
+      rect: [0, 250, 1280, 470]
+
+llm:
+  enable: false
+  keyframe_dir: /home/seeed/projects/jetedge-agent/logs/keyframes_openvideo
+  cloud_output_path: /home/seeed/projects/jetedge-agent/logs/openvideo_analysis.jsonl
+  deepseek_interval_sec: 60
+
+scheduler:
+  enable: true
+  sample_interval_sec: 2
+  pressure_cpu_enter: 70.0
+  pressure_cpu_exit: 50.0
+  thermal_temp_enter: 75.0
+  thermal_temp_exit: 70.0
+  critical_temp_enter: 82.0
+  critical_temp_exit: 76.0
+  min_hold_sec: 15
+  cooldown_sec: 30
+  max_adjustments_per_window: 2
+  adjust_window_sec: 120
+
+control:
+  enable: true
+  host: 127.0.0.1
+  port: 8091
+  state_dir: /home/seeed/projects/jetedge-agent/logs/control_openvideo
+  max_body_bytes: 4096
+  read_timeout_ms: 5000
+  max_infer_interval: 5
+  restart_min_interval_ms: 30000
+  max_snapshots: 32
+  benchmark_min_duration_s: 5
+  benchmark_max_duration_s: 120
+  benchmark_default_duration_s: 60
+
+streams:
+  - id: cam1
+    type: file
+    uri: /home/seeed/jetedge-openvideos/person-bicycle-car-detection.mp4
+    priority: high
+    expected_fps: 12
+
+  - id: cam2
+    type: file
+    uri: /home/seeed/jetedge-openvideos/car-detection.mp4
+    priority: normal
+    expected_fps: 12
+
+  - id: cam3
+    type: file
+    uri: /home/seeed/jetedge-openvideos/people-detection.mp4
+    priority: normal
+    expected_fps: 12
+
+  - id: cam4
+    type: file
+    uri: /home/seeed/jetedge-openvideos/one-by-one-person-detection.mp4
+    priority: low
+    expected_fps: 10
