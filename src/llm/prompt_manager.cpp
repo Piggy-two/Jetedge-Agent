@@ -183,11 +183,18 @@ std::string PromptManager::build_qwen_body(
 std::string PromptManager::build_deepseek_body(const std::string& model,
                                                const std::string& prompt_text,
                                                const std::string& system_message,
-                                               int max_tokens) const {
+                                               int max_tokens,
+                                               bool thinking_mode) const {
   Json::Value root;
   root["model"] = model.empty() ? "deepseek-chat" : model;
   root["max_tokens"] = max_tokens > 0 ? max_tokens : 512;
   root["stream"] = false;
+  // Routine classification/diagnosis: disable reasoning so the bounded
+  // token budget goes to the schema JSON, not to reasoning_content
+  // (deepseek-v4-flash reasons by default; verified against the live API).
+  if (!thinking_mode) {
+    root["thinking"]["type"] = "disabled";
+  }
 
   Json::Value messages(Json::arrayValue);
   Json::Value sys_msg;

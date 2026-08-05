@@ -1,0 +1,149 @@
+# JetEdge-Agent Stage 14 demo configuration — same full stack as the 2-hour
+# stability config (streams_stage14.yaml) but with the `llm` group ENABLED.
+# Used for the short-window live demos (Demo 2 Qwen review, Demo 3 DeepSeek
+# diagnosis, Demo 4 safe Agent), where cloud call volume is bounded by the
+# run duration and the bounded queue sheds excess load.
+#
+# Distinct output paths so demo runs never mix with the stability run's
+# artifacts.
+
+rtsp:
+  enable: true
+  live_source: true
+  transport: tcp
+  watch_timeout_sec: 5
+  first_frame_timeout_sec: 12
+  max_retries: 5
+  backoff_base_ms: 1000
+  backoff_max_ms: 15000
+  verify_sec: 5
+  min_fps: 1.0
+  rtspsrc_latency_ms: 500
+
+mux:
+  output_width: 1280
+  output_height: 720
+  batch_timeout_usec: 40000
+
+inference:
+  enable: true
+  config_file_path: configs/nvinfer_yolo11s_b4_fp16.txt
+  gie_unique_id: 1
+
+tracker:
+  enable: true
+  ll_lib_file: /opt/nvidia/deepstream/deepstream-7.1/lib/libnvds_nvmultiobjecttracker.so
+  ll_config_file: /opt/nvidia/deepstream/deepstream-7.1/samples/configs/deepstream-app/config_tracker_NvDCF_perf.yml
+  width: 960
+  height: 544
+  gpu_id: 0
+
+output:
+  jsonl_path: /home/seeed/projects/jetedge-agent/logs/stage14_demo_detections.jsonl
+  labels_file_path: /home/seeed/projects/jetedge-agent/configs/coco_labels.txt
+  fps_report_interval_sec: 5
+
+events:
+  enable: true
+  jsonl_path: /home/seeed/projects/jetedge-agent/logs/stage14_demo_events.jsonl
+  keyframe_dir: /home/seeed/projects/jetedge-agent/logs/keyframes_stage14_demo
+  max_keyframes: 150
+  jpeg_quality: 85
+  disappear_grace_frames: 15
+  count_threshold: 3
+  count_hysteresis: 1
+  classes: [0, 1, 2, 3, 5, 7]
+  zones:
+    - name: road
+      stream_id: cam1
+      rect: [0, 250, 1280, 470]
+
+llm:
+  enable: true
+  keyframe_dir: /home/seeed/projects/jetedge-agent/logs/keyframes_stage14_demo
+  cloud_output_path: /home/seeed/projects/jetedge-agent/logs/stage14_demo_analysis.jsonl
+  deepseek_interval_sec: 60
+
+  qwen:
+    endpoint: "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
+    model: "qwen3.6-flash"
+    max_tokens: 512
+    timeout_sec: 30
+    max_retries: 2
+    thinking_mode: false
+
+  deepseek:
+    endpoint: "https://api.deepseek.com/v1/chat/completions"
+    model: "deepseek-v4-flash"
+    max_tokens: 512
+    timeout_sec: 30
+    max_retries: 2
+    thinking_mode: false
+
+  queue:
+    max_size: 32
+    worker_threads: 1
+
+  circuit_breaker:
+    failure_threshold: 5
+    reset_timeout_sec: 30
+    half_open_success_threshold: 2
+
+  routing:
+    appearance_to_qwen: false
+    disappearance_to_qwen: false
+    zone_entry_to_qwen: true
+    count_high_to_qwen: false
+
+scheduler:
+  enable: true
+  sample_interval_sec: 2
+  pressure_cpu_enter: 70.0
+  pressure_cpu_exit: 50.0
+  thermal_temp_enter: 75.0
+  thermal_temp_exit: 70.0
+  critical_temp_enter: 82.0
+  critical_temp_exit: 76.0
+  min_hold_sec: 15
+  cooldown_sec: 30
+  max_adjustments_per_window: 2
+  adjust_window_sec: 120
+
+control:
+  enable: true
+  host: 127.0.0.1
+  port: 8090
+  state_dir: /home/seeed/projects/jetedge-agent/logs/control_stage14_demo
+  max_body_bytes: 4096
+  read_timeout_ms: 5000
+  max_infer_interval: 5
+  restart_min_interval_ms: 30000
+  max_snapshots: 32
+  benchmark_min_duration_s: 5
+  benchmark_max_duration_s: 120
+  benchmark_default_duration_s: 60
+
+streams:
+  - id: cam1
+    type: rtsp
+    uri: rtsp://127.0.0.1:8554/cam1
+    priority: high
+    expected_fps: 30
+
+  - id: cam2
+    type: rtsp
+    uri: rtsp://127.0.0.1:8554/cam2
+    priority: normal
+    expected_fps: 30
+
+  - id: cam3
+    type: rtsp
+    uri: rtsp://127.0.0.1:8554/cam3
+    priority: normal
+    expected_fps: 30
+
+  - id: cam4
+    type: rtsp
+    uri: rtsp://127.0.0.1:8554/cam4
+    priority: low
+    expected_fps: 30

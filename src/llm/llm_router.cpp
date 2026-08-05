@@ -271,7 +271,7 @@ void LlmRouter::process_request(LlmRequest req) {
             : PromptManager::build_deepseek_metrics_prompt(req.metrics_json);
     body = prompts_->build_deepseek_body(ep.model, prompt,
                                          PromptManager::deepseek_system_message(),
-                                         ep.max_tokens);
+                                         ep.max_tokens, ep.thinking_mode);
   }
   if (body.empty()) {
     LOG_WARN("llm", "%s request body build failed", llm_provider_str(req.provider));
@@ -302,8 +302,8 @@ void LlmRouter::process_request(LlmRequest req) {
 
   if (resp.success && resp.status_code == 200) {
     std::string content;
-    if (PromptManager::extract_content(resp.body, content) &&
-        PromptManager::validate_review_json(content)) {
+    const bool extracted = PromptManager::extract_content(resp.body, content);
+    if (extracted && PromptManager::validate_review_json(content)) {
       result.success = true;
       // Store the normalized form so analysis-JSONL records stay directly
       // parseable regardless of model fence habits.
@@ -316,12 +316,16 @@ void LlmRouter::process_request(LlmRequest req) {
                static_cast<unsigned long long>(req.request_id),
                static_cast<unsigned long long>(latency_ms), resp.status_code);
     } else {
+      // Preserve the original error context (CLAUDE.md §10): log whether
+      // extraction or schema validation failed and a truncated raw body
+      // (model text, no secrets).
       result.error = "schema validation failed: content is not the expected JSON";
       cb->record_failure();
       std::lock_guard<std::mutex> lock(stats_mu_);
       ++stats_.failed;
-      LOG_WARN("llm", "%s response schema invalid: %s",
-               llm_provider_str(req.provider), result.error.c_str());
+      LOG_WARN("llm", "%s response schema invalid (extracted=%d): %s | raw=%.240s",
+               llm_provider_str(req.provider), extracted ? 1 : 0,
+               result.error.c_str(), resp.body.c_str());
     }
   } else {
     result.error = resp.error.empty()

@@ -42,10 +42,16 @@ class PromptManager {
                               int max_tokens, bool thinking_mode) const;
 
   // OpenAI-compatible request body for DeepSeek (text only).
+  // `thinking_mode=false` sends "thinking":{"type":"disabled"} — the
+  // deepseek-v4-flash endpoint reasons by default, and with a bounded
+  // max_tokens the reasoning can consume the whole budget, leaving
+  // choices[0].message.content empty (verified 2026-08-05: 512-token calls
+  // returned empty content with ~2.5k chars of reasoning_content; with
+  // thinking disabled the same call returns the schema JSON in content).
   std::string build_deepseek_body(const std::string& model,
                                   const std::string& prompt_text,
                                   const std::string& system_message,
-                                  int max_tokens) const;
+                                  int max_tokens, bool thinking_mode) const;
 
   // base64-encode a JPEG file for the data URL.  Returns "" on failure.
   static std::string base64_encode_file(const std::string& path);

@@ -1,9 +1,10 @@
 # JetEdge-Agent Progress
 
-最后更新时间：2026-08-04
+最后更新时间：2026-08-05
 
 ## 当前结论
 
+- **阶段 14（稳定性测试、Demo 与项目包装）：已完成 ✓（2026-08-05）**——2 小时 4 路 RTSP 连续运行（7208 s、87.4 万帧、每路 ~30 fps 全程稳定、P50 36.5/P95 43.5/P99 47.0ms 零漂移、RSS 629.6→635.0 MiB +0.86% 收敛、温度 63.5°C、调度 NORMAL ×120/120、0 意外重连 0 失败、检测 388.8 万 + 事件 17.8 万行 JSONL 逐行 0 非法、SIGINT exit OK）；Demo 1-4 实机演示（故障恢复 / Qwen 事件复核 / DeepSeek 性能诊断 / 安全 Agent 双回滚）；**发现并修复 DeepSeek 空响应缺陷**（deepseek-v4-flash 默认推理占满 512 token 预算 → content 为空 → `thinking` 禁用参数接线 + 回归测试 6a/6b，服务端与 Agent 同步修复）；打包（`docs/stage14_stability.md`、`docs/demo.md`、`docs/resume_summary.md`、3 个新脚本、3 个新配置）。**全部 14 个阶段完成。** 详见 `docs/stage14_stability.md`
 - 阶段 0（环境核查）：已完成 ✓
 - 阶段 1（单路硬件解码）：已完成 ✓
 - 阶段 3（YOLO11s ONNX 导出、验证、传输与 SHA256 一致性验收）：已完成 ✓
@@ -180,4 +181,36 @@
 - ~~Stage 11：Control API、快照和回滚（Agent 前置）~~ → 已完成，见 `docs/stage11_control.md`
 - ~~Stage 12：Agent 白名单工具调用、验证、审计和回滚（含 run_benchmark 端点）~~ → 已完成，见 `docs/stage12_agent.md`
 - ~~Stage 13：INT8 PTQ 与精度回归~~ → 已完成（工具链 + 回归框架 + 实测结论；精度未达保守阈值按纪律回退 FP16，性能收益记录在案），见 `docs/stage13_int8.md`
-- 稳定性测试、Demo 和项目包装
+- ~~Stage 14：稳定性测试、Demo 和项目包装~~ → 已完成（2h 稳定性 + Demo 1-4 + 打包 + 简历指标汇总），见 `docs/stage14_stability.md`、`docs/demo.md`、`docs/resume_summary.md`
+
+## 阶段 14 验收记录（2026-08-05）
+
+### 2 小时稳定性运行（configs/streams_stage14.yaml，llm 关闭，4×RTSP）
+
+| 指标 | 实测 |
+|---|---|
+| 运行时长 | 7208 s（2h00m08s） |
+| 帧数 | 873,569（cam1 218,341 / cam2 218,568 / cam3 218,330 / cam4 218,330） |
+| 检测 / 事件 JSONL | 3,887,981 / 178,356 行，**逐行校验 0 非法** |
+| 事件分布 | appearance 57,192 / disappearance 57,192 / zone_entry 53,868 / count_high 5,053 / count_exit 5,051 |
+| 关键帧 | 150 次保存（cap）、120 唯一文件 |
+| RSS | 629.6 → 635.0 MiB（+0.86%），后段完全平坦 |
+| 温度 / CPU（单核） | 均值 63.5°C / 14.0%，峰值 64.2°C / 15.1% |
+| 延迟（60s 采样 120 点） | P50 36.5（36.2-37.1）/ P95 43.5（43.0-45.0）/ P99 ~47.0 ms；首尾 10% 窗口漂移 +0.3ms |
+| 每路 FPS | 29.0-31.0（均值 ~30.0），无随时间下降 |
+| 重连 / 失败 | **0 / 0**（4 路全程 RUNNING） |
+| 调度 | NORMAL ×120/120（100%） |
+| 退出 | SIGINT → `exit OK` |
+
+### Demo 1-4（configs/streams_stage14_demo.yaml / _demo3.yaml，真实 API）
+
+| Demo | 结果 |
+|---|---|
+| Demo 1 故障恢复 | cam3 断流 → 退避重连（reconnect 2→4→5）→ 发布恢复 → `verified: 30.0 fps ≥ 1.0 → RUNNING`；cam1/2/4 全程 0 reconnect/0 failure |
+| Demo 2 事件理解 | 本地事件 8,747 行 0 非法；关键帧 119 张；Qwen 真实复核 31 行 0 非法（带关键帧确认 true；cap 后降级复核诚实拒绝零幻觉）；Qwen 23.2s 往返期间本地产出 573 事件（本地优先）；云端调用时 FPS 29.2-30.0 / P95 44.3ms 零影响 |
+| Demo 3 性能诊断 | DeepSeek 周期诊断全部 success：基线（cam1 密度异常）→ 故障期（cam3 FPS 24.5→18.4 vs 27.6，建议核查）→ 恢复后（4 路 RUNNING）；FAILED 终态按设计拒绝 restart（RTSP_FAILED） |
+| Demo 4 安全 Agent | 场景 A（真实 DeepSeek）：LLM 候选 → 快照 → interval 变更 → before 43.6 → after 42.2/40.5ms 未达双阈值（≤37.1/35.6）→ 自动回滚 ×2；场景 B（--no-llm）：44.2→42.0/41.5 + cam1 FPS 26.0/25.6 < 35 → 回滚 ×2；回滚后 interval 全部归 0、4 路 RUNNING；服务端审计 benchmark×6 / set_infer_interval×8 / rollback×4 / snapshot×2；Agent 审计 31 行 0 非法 |
+
+### 本会话修复的缺陷
+
+1. **DeepSeek 空响应（R1）**：deepseek-v4-flash 默认推理，512 token 预算被 reasoning_content 全部消耗 → `content` 空 → schema 校验失败（实证 `"content":"","reasoning_content":"We need to analyze the metrics..."`）。线上 curl 实证两种修复（max_tokens=2048 / `thinking` 禁用参数）后按 §14 采用思考禁用，把 `thinking_mode` 旋钮真正接线（src/llm/prompt_manager.cpp、llm_router.cpp、agent/deepseek_client.py），回归测试 6a/6b；修复后 DeepSeek 周期诊断与 Agent 规划全部 success。

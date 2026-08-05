@@ -9,9 +9,11 @@ Before any work, read these files in order:
 3. `docs/PROGRESS.md`
 4. `models/model_info.txt`
 
-Current scope is complete through Stage 13 (INT8 PTQ). Next approved stages: stability testing (2-hour), Demo, and project packaging — do not start those before they are explicitly requested. Do not start event-engine extensions without an explicit request.
+Current scope is complete through Stage 14 (stability testing, Demo, packaging). All 14 approved stages are accepted. Do not start event-engine extensions, Docker deployment, Grafana, custom CUDA post-processing, or any other P1/P2 work without an explicit request.
 
 Stages 4-13 are complete and accepted (2026-08-01/04): single-stream inference (`docs/stage4` evidence in `docs/PROGRESS.md`), four-stream + tracker + metrics, events + keyframes (`docs/stage6_events.md`), Qwen + DeepSeek async analysis (`docs/stage7_llm.md`), RTSP fault isolation (`docs/stage8_rtsp.md`), deterministic adaptive scheduler (`docs/stage9_scheduler.md`), ftrace / CPU Affinity analysis (`docs/stage10_ftrace.md`), safe Control API + snapshots + validation + rollback (`docs/stage11_control.md`), Agent loop (`docs/stage12_agent.md`), INT8 PTQ + accuracy regression (`docs/stage13_int8.md` — toolchain complete; accuracy below the conservative threshold, delivery stays FP16, measured INT8 perf benefit recorded).
+
+Stage 14 is complete and accepted (2026-08-05): 2-hour 4-stream RTSP stability run (7208 s, 873,569 frames, 4.06M JSONL lines 0 invalid, RSS +0.86% converged, 0 unexpected reconnects, P95 43.5 ms stable, exit OK — `docs/stage14_stability.md`), Demos 1-4 (`docs/demo.md`), packaging + resume metrics (`docs/resume_summary.md`). Defect fixed during acceptance: deepseek-v4-flash reasoning now consumes the bounded token budget leaving `content` empty — the `thinking_mode` config knob is now wired to `"thinking":{"type":"disabled"}` (server + agent + regression tests 6a/6b).
 
 Hard constraints:
 
@@ -98,12 +100,13 @@ Jetson path: /home/seeed/JetEdge-Agent/models/yolo11s.onnx
 Metadata path: /home/seeed/JetEdge-Agent/models/model_info.txt
 ```
 
-The next approved implementation stage (not yet started):
+The Stage 14 stability/packaging work is complete and accepted (2026-08-05):
 
 ```text
-Stability / packaging stage:
-1. 2-hour multi-stream stability run (RSS, JSONL validity, reconnect counters, exit code).
-2. Demo flows (Demo 1-4 from README §19) and project packaging.
+Stability / packaging stage: DONE
+1. 2-hour multi-stream stability run (7208 s, RSS +0.86%, JSONL 4.06M lines 0 invalid,
+   reconnect counters 0, exit OK) — docs/stage14_stability.md
+2. Demo flows 1-4 (README §19) + project packaging — docs/demo.md, docs/resume_summary.md
 ```
 
 Out of scope until explicitly requested:
@@ -112,6 +115,7 @@ Out of scope until explicitly requested:
   threshold — re-enabling requires user approval and re-running the regression);
 - event-engine extensions;
 - custom CUDA post-processing;
+- Docker deployment / Grafana dashboard;
 - scheduler / RTSP / LLM / control-API / Agent extensions;
 - broad refactoring.
 

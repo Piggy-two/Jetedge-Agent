@@ -881,3 +881,44 @@ python3 scripts/extract_calib_frames.py [--out-dir /home/seeed/jetedge-calib]
 - 阈值 0.95 为保守初始值；业务可接受 0.94+（关键目标留存 0.95+）时 MinMax engine 可启用（换 engine 路径）
 - 低置信边缘框（0.25-0.4）的量化损失：可实验降低 pre-cluster 阈值或输出头前插 FP16 层（需图改造）
 - 校准策略（per-layer 混合精度、更多场景覆盖）留作后续
+
+---
+
+## 阶段 14：稳定性测试、Demo 与项目包装
+
+**日期**：2026-08-05
+
+### 1. 2 小时稳定性运行（`configs/streams_stage14.yaml`，4×RTSP，llm 关闭）
+
+- 运行 7208 s（2h00m08s），处理 873,569 帧（cam1 218,341 / cam2 218,568 / cam3 218,330 / cam4 218,330，每路 ~30 fps 全程稳定）
+- 检测 JSONL 3,887,981 行 + 事件 JSONL 178,356 行，**逐行校验 0 非法**（validate_jsonl.py）
+- 关键帧 150 次保存（cap）/ 120 唯一文件；事件分布 appearance 57,192 / disappearance 57,192 / zone_entry 53,868 / count_high 5,053 / count_exit 5,051
+- RSS 629.6 → 635.0 MiB（+0.86%），后段完全平坦；温度均值 63.5°C 峰值 64.2°C；CPU 均值 14.0%
+- 延迟 120 采样：P50 36.5 / P95 43.5 / P99 ~47.0 ms，首尾 10% 窗口 P95 漂移 +0.3ms
+- 调度 NORMAL ×120/120；**0 意外重连 0 失败**；SIGINT 优雅退出 `exit OK`
+- 采样工具：`scripts/stability_monitor.py`（60s 采样 RSS/CPU/温度/P50-95-99/重连 → CSV）、`scripts/analyze_stability.py`、`scripts/validate_jsonl.py`
+
+### 2. Demo 1-4（真实云端 API）
+
+| Demo | 关键证据 |
+|---|---|
+| 1 故障恢复 | cam3 断流 → 指数退避重连 → 发布恢复 → `verified: 30.0 fps ≥ 1.0 → RUNNING`；cam1/2/4 全程 0 reconnect/0 failure |
+| 2 事件理解 | 本地事件 8,747 行 0 非法；关键帧 119 张；Qwen 真实复核 31 行 0 非法；带关键帧确认 true（"A white car is detected..."）；cap 后降级复核诚实拒绝零幻觉；本地优先（23.2s 往返期间 573 事件）；云端调用 FPS 零影响 |
+| 3 性能诊断 | DeepSeek 周期诊断基线/故障期（cam3 FPS 24.5→18.4 vs 27.6）/恢复后全部 success；FAILED 终态拒绝 restart（RTSP_FAILED，按设计） |
+| 4 安全 Agent | 场景 A 真实 DeepSeek：43.6→42.2/40.5ms 未达双阈值回滚 ×2；场景 B 确定性：cam1 FPS 26.0/25.6<35 回滚 ×2；interval 全部归 0；双审计链（服务端 benchmark×6/set_infer_interval×8/rollback×4 + Agent 31 行） |
+
+### 3. 本阶段发现并修复的缺陷
+
+- **DeepSeek 空响应（R1）**：deepseek-v4-flash 默认推理，512 token 预算被 reasoning_content 占满 → `content` 空 → schema 校验失败（实证日志：`"content":"","reasoning_content":"We need to analyze the metrics..."`）。线上 curl 实证 max_tokens=2048 与 `thinking` 禁用均有效；按 §14 采用思考禁用，把长期无效的 `thinking_mode` 旋钮接线（src/llm/prompt_manager.cpp build_deepseek_body + llm_router.cpp + agent/deepseek_client.py），回归测试 6a/6b（ctest 9/9，Python 41 用例）。修复后 DeepSeek 周期诊断与 Agent 规划全部 success。
+- `start_pipeline.sh start <config>` 子命令不转发配置参数（误用默认配置）——改用直接传参调用（脚本既有行为，本次记录用法）
+
+### 4. 打包产物
+
+- 配置：`configs/streams_stage14.yaml`（2h）、`configs/streams_stage14_demo.yaml`（Demo 2）、`configs/streams_stage14_demo3.yaml`（Demo 3/4）
+- 脚本：`stability_monitor.py`、`analyze_stability.py`、`validate_jsonl.py`
+- 文档：`docs/stage14_stability.md`、`docs/demo.md`、`docs/resume_summary.md`；README/PROGRESS 同步
+
+### 5. 遗留
+
+- Docker 部署、Grafana Dashboard、自定义 CUDA 后处理等 P1/P2 项未实施（等待显式请求）
+- 关键帧 cap 后 Qwen 降级为纯元数据复核（有界资源设计，非缺陷）

@@ -110,6 +110,24 @@ int main() {
           "5d: fence-only content empty");
   }
 
+  // ---- 6. build_deepseek_body thinking knob (Stage 14 regression) ----
+  // deepseek-v4-flash reasons by default; with a bounded max_tokens the
+  // reasoning can consume the whole budget leaving message.content empty
+  // (observed live 2026-08-05).  thinking_mode=false must emit
+  // "thinking":{"type":"disabled"}.
+  {
+    const PromptManager pm;  // build_deepseek_body is a const member
+    const std::string off = pm.build_deepseek_body(
+        "deepseek-v4-flash", "prompt", "sys", 512, /*thinking_mode=*/false);
+    check(off.find("\"thinking\"") != std::string::npos &&
+              off.find("disabled") != std::string::npos,
+          "6a: thinking disabled emitted for non-thinking mode");
+    const std::string on = pm.build_deepseek_body(
+        "deepseek-v4-flash", "prompt", "sys", 512, /*thinking_mode=*/true);
+    check(on.find("\"thinking\"") == std::string::npos,
+          "6b: thinking key absent in thinking mode");
+  }
+
   std::printf("\n%s (%d failure(s))\n", g_failures == 0 ? "ALL PASS" : "FAILURES",
               g_failures);
   return g_failures == 0 ? 0 : 1;

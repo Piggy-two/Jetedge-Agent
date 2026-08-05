@@ -119,6 +119,11 @@ class DeepSeekClient:
             "model": self.cfg.get("deepseek_model", "deepseek-v4-flash"),
             "temperature": 0,
             "max_tokens": self.cfg.get("deepseek_max_tokens", 512),
+            # deepseek-v4-flash reasons by default; with a bounded budget the
+            # reasoning consumes it and tool_calls/content come back empty
+            # (verified 2026-08-05, same fix as src/llm/prompt_manager.cpp).
+            # Routine planning is non-thinking by design (CLAUDE.md §14).
+            "thinking": {"type": "disabled"},
             "messages": [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": observation},
