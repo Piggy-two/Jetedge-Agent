@@ -964,7 +964,9 @@ Policy 校验候选工具，保存快照，执行低风险调整，重新 Benchm
 | `docs/tool_api.md` | Control API 和工具协议 |
 | `docs/safety.md` | Agent 权限、验证和回滚 |
 | `docs/demo.md` | Demo 1-4 演示指南与实测验收 |
+| `docs/stage15_plan.md` | Stage 15 Web 仪表盘与一键演示验收报告 |
 | `docs/resume_summary.md` | 简历项目描述与全项目量化指标汇总 |
+| `docs/project_introduction.md` | 简历用详细项目介绍（背景、架构、分阶段详解、难点攻关、中英文简历示例） |
 
 ---
 
