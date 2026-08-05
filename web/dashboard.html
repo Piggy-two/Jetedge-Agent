@@ -56,6 +56,13 @@
          align-items:center; margin:4px 0; font-size:12px; }
   .err { color:var(--bad); font-size:12px; padding:2px 0; }
   .err .dim { color:var(--dim); }
+  .ev { font-size:12px; padding:2px 0; border-bottom:1px dotted var(--line); }
+  .ev .tag { display:inline-block; background:#0b0f14; border:1px solid var(--line);
+             border-radius:3px; padding:0 5px; margin-right:6px; font-size:11px; }
+  .kf { display:flex; gap:8px; flex-wrap:wrap; }
+  .kf img { width:96px; height:54px; object-fit:cover; border:1px solid var(--line);
+            border-radius:4px; background:#0b0f14; }
+  .kf .cap { font-size:10px; color:var(--dim); text-align:center; }
   .ctl { display:flex; gap:8px; align-items:center; flex-wrap:wrap;
          margin:6px 0; }
   input, select { background:#0b0f14; color:var(--text); border:1px solid var(--line);
@@ -105,6 +112,16 @@
   </section>
 
   <section class="panel">
+    <h2>事件流（最新）</h2>
+    <div id="events">无</div>
+  </section>
+
+  <section class="panel">
+    <h2>关键帧</h2>
+    <div id="keyframes">无</div>
+  </section>
+
+  <section class="panel">
     <h2>安全操作面板（§16：快照 → 变更 → 验证 → 回滚）</h2>
     <div id="ctlList"></div>
     <div class="ctl" style="margin-top:10px">
@@ -144,6 +161,7 @@ async function poll(force) {
   const results = await Promise.allSettled([
     getJson("/health"), getJson("/streams"), getJson("/metrics/summary"),
     getJson("/scheduler/state"), getJson("/errors/recent"),
+    getJson("/events/recent?limit=20"), getJson("/keyframes"),
   ]);
   const conn = $("conn");
   const ok = results.every(r => r.status === "fulfilled");
@@ -151,7 +169,7 @@ async function poll(force) {
   conn.className = ok ? "ok" : "bad";
   if (!ok) return;
 
-  const [, streams, metrics, sched, errors] = results.map(r =>
+  const [, streams, metrics, sched, errors, evFeed, kfList] = results.map(r =>
     r.status === "fulfilled" ? r.value : {});
 
   // ---- scheduler header ----
@@ -192,6 +210,31 @@ async function poll(force) {
     " <b>" + esc(e.stream_id || "*") + "</b> " + esc(e.code || "") +
     "<span class='dim'> " + esc(e.message || "") + "</span></div>").join("")
     : "<span class='dim'>无</span>";
+
+  // ---- event feed (newest first) ----
+  const evs = evFeed.events || [];
+  $("events").innerHTML = evs.length ? evs.map(e =>
+    "<div class='ev'><span class='tag'>" + esc(e.event || "") + "</span>" +
+    "<b>" + esc(e.stream_id || "") + "</b> " +
+    esc(e.class || "") + " #" + esc(e.track_id) +
+    (e.count != null ? " count=" + esc(e.count) : "") +
+    (e.zone ? " zone=" + esc(e.zone) : "") +
+    " <span class='dim'>" + esc(new Date(e.ts_ms).toLocaleTimeString()) + "</span></div>"
+  ).join("") : "<span class='dim'>无（事件引擎关闭或尚无事件）</span>";
+
+  // ---- keyframe thumbnails (from event records + directory listing) ----
+  const kfNames = [];
+  for (const e of evs) {
+    if (e.keyframe && !kfNames.includes(e.keyframe)) kfNames.push(e.keyframe);
+  }
+  for (const n of (kfList.files || [])) {
+    if (!kfNames.includes(n)) kfNames.push(n);
+  }
+  $("keyframes").innerHTML = kfNames.slice(0, 12).length ?
+    "<div class='kf'>" + kfNames.slice(0, 12).map(n =>
+      "<div><img src='" + API + "/keyframes/" + encodeURIComponent(n) +
+      "' alt='" + esc(n) + "'><div class='cap'>" + esc(n) + "</div></div>").join("") +
+    "</div>" : "<span class='dim'>无</span>";
 
   // ---- control panel ----
   $("ctlList").innerHTML = (streams.streams || []).map(s =>

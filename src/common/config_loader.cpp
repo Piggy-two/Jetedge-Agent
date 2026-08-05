@@ -494,6 +494,11 @@ bool load_streams_config(const std::string& path, StreamsConfig& config, std::st
       return false;
     }
 
+    // Stage 15 P1: hand the event/keyframe output locations to the Control
+    // API (read-only display endpoints) — parsed after both sections above.
+    config.control.events_jsonl_path = config.events.jsonl_path;
+    config.control.keyframes_dir = config.events.keyframe_dir;
+
     return true;
   } catch (const YAML::Exception& e) {
     error_out = std::string("YAML parse error: ") + e.what();

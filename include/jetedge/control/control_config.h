@@ -38,6 +38,11 @@ struct ControlConfig {
   // Stage 15 web dashboard.
   bool cors = false;                    // CORS headers + OPTIONS preflight
   std::string dashboard_file = "web/dashboard.html";  // served at GET /dashboard
+  // Read-only event/keyframe feeds (Stage 15 P1).  Populated by the config
+  // loader from the `events` section; empty string disables the endpoint
+  // (returns an empty list / 404) — the API must never break the pipeline.
+  std::string events_jsonl_path;
+  std::string keyframes_dir;
 };
 
 }  // namespace control

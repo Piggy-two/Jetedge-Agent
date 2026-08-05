@@ -18,6 +18,10 @@
 //
 // Endpoints:
 //   GET  /dashboard                  → static web dashboard (Stage 15)
+//   GET  /events/recent[?limit=N]    → newest-first events (bounded tail,
+//                                      N clamped to [1,200], default 50)
+//   GET  /keyframes                  → newest-first keyframe file names (≤100)
+//   GET  /keyframes/<name>           → one keyframe JPEG (whitelisted name)
 //   GET  /health                     → {"status":"ok"}
 //   GET  /metrics/summary            → per-stream frame/FPS summary
 //   GET  /streams                    → per-stream runtime status
@@ -95,6 +99,10 @@ class ControlServer {
   Json::Value json_scheduler_config() const;
   Json::Value json_scheduler_state() const;
   Json::Value json_recent_errors() const;
+  Json::Value json_recent_events(const std::string& query) const;
+  Json::Value json_keyframes() const;
+  HttpResponse serve_keyframe(const std::string& request_id,
+                              const std::string& name);
 
   // POST /benchmark — controlled measurement window (read-only, single-flight).
   HttpResponse handle_benchmark(const std::string& request_id, const Json::Value& body);

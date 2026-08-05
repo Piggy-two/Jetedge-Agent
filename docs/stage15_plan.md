@@ -1,7 +1,7 @@
-# Stage 15 计划：Web 可视化仪表盘与一键演示（P0 已完成，P1 待办）
+# Stage 15：Web 可视化仪表盘与一键演示（P0+P1 已完成，Stage 15 全部完成）
 
-> 状态：**P0 已实现并实机验收（2026-08-05）**；P1（/events/recent、/keyframes、
-> demo_run.sh）仍为 planned。P0 由用户显式请求立项（2026-08-05）。
+> 状态：**P0 与 P1 均已实现并实机验收（2026-08-05）**。Stage 15 完成。
+> 由用户显式请求立项（2026-08-05）。
 
 ## 1. 目标
 
@@ -96,11 +96,18 @@ API 故障时降级显示（与 Stage 11 "API 故障不影响管道"的工程叙
 浏览器侧（Windows 主机）：打开 `http://<jetson-ip>:8091/dashboard` 或经 SSH 隧道
 `http://127.0.0.1:8091/dashboard` 即可（仪表盘与 API 同源，无需隧道配置 CORS）。
 
-### P1 验收标准（待实施）
+### P1 验收记录（2026-08-05，已通过）
 
-1. /events/recent 有界读、/keyframes 白名单与路径穿越拒绝
-2. `demo_run.sh` 一条命令完成启动→演示→清理，全程无 ERROR、`exit OK`
-3. 文档更新：README/PROGRESS 状态同步，本文转验收记录
+1. **GET /events/recent[?limit=N]**：事件 JSONL 有界尾读（64 KiB 窗口、整行、N 钳位 [1,200] 默认 50）、最新优先、畸形行跳过、文件缺失返回空列表（显示端点永不报错）；单测覆盖 5 项
+2. **GET /keyframes**：白名单过滤（`[A-Za-z0-9_-]+\.jpg`）倒序列表、上限 100
+3. **GET /keyframes/{name}**：白名单拒绝（evil.png→400、路径穿越→404/400 双路拒绝）、缺失→404、5 MiB 上限、image/jpeg
+4. **单测**：test_control_api **294 checks 0 failures**，ctest 9/9
+5. **实机（demo_run.sh start，文件源）**：/events/recent 返回真实事件（含 keyframe 文件名）、/keyframes 列表 100 条最新优先、关键帧 GET 200 image/jpeg 67KB（JPEG 1280x720 验证）、退出 exit OK、JSONL 0 非法 0 ERROR
+6. **demo_run.sh**：start（打印演示步骤与仪表盘 URL）/ status / stop 全链路实测；stop 幂等清理（管道 SIGINT + MediaMTX/发布进程停止，实测还清掉了此前遗留的 RTSP 栈）
+7. **仪表盘新增**：事件流面板（最新 20 条，含 event/class/count/zone 标签）+ 关键帧缩略图条（从事件记录取 keyframe 文件名 + 目录列表兜底，最多 12 张，点击即从 /keyframes 加载）
+
+测试中发现并修复：tail 窗口覆盖整个文件时误丢首行（`read_len < size` 才做首行截断）；
+fixture `get()` 未拆 query 导致 `?limit=` 失效（对齐真实 HTTP 层语义）。
 
 ## 6. 预计工作量
 

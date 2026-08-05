@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cctype>
+#include <dirent.h>
 #include <fstream>
 #include <thread>
 #include <vector>
@@ -42,6 +44,101 @@ std::string json_str(const Json::Value& v) {
 
 }  // namespace
 
+// ---- Stage 15 P1: read-only event/keyframe feeds ---------------------------
+
+namespace {
+
+constexpr std::streamoff kTailMaxBytes = 64 * 1024;    // /events/recent window
+constexpr std::streamoff kKeyframeMaxBytes = 5 << 20;  // per-keyframe cap
+constexpr size_t kKeyframesListCap = 100;
+constexpr int kEventsLimitMax = 200;
+
+// Read the last up-to-max_bytes of `path`, returning whole lines newest-first.
+// Missing/empty file → empty vector.  Malformed trailing lines are dropped.
+std::vector<std::string> tail_lines(const std::string& path,
+                                    std::streamoff max_bytes) {
+  std::vector<std::string> out;
+  std::ifstream in(path, std::ios::binary | std::ios::ate);
+  if (!in) {
+    return out;
+  }
+  const std::streamoff size = in.tellg();
+  if (size <= 0) {
+    return out;
+  }
+  const std::streamoff read_len = std::min(size, max_bytes);
+  in.seekg(-read_len, std::ios::end);
+  std::string buf(static_cast<size_t>(read_len), '\0');
+  in.read(buf.data(), static_cast<std::streamsize>(read_len));
+  size_t pos = 0;
+  if (read_len < size) {
+    // Window starts mid-file: drop the partial first line.
+    const size_t nl = buf.find('\n');
+    if (nl == std::string::npos) {
+      return out;
+    }
+    pos = nl + 1;
+  }
+  // Split into lines, collect newest-first.
+  std::vector<std::string> lines;
+  while (pos < buf.size()) {
+    const size_t nl = buf.find('\n', pos);
+    if (nl == std::string::npos) {
+      break;
+    }
+    lines.push_back(buf.substr(pos, nl - pos));
+    pos = nl + 1;
+  }
+  std::reverse(lines.begin(), lines.end());
+  return lines;
+}
+
+// "limit=N" from the raw query string; clamped to [1, kEventsLimitMax],
+// default 50 when absent or malformed.
+int parse_limit(const std::string& query, int def) {
+  const size_t pos = query.find("limit=");
+  if (pos == std::string::npos) {
+    return def;
+  }
+  size_t end = pos + 6;
+  while (end < query.size() && std::isdigit(static_cast<unsigned char>(query[end]))) {
+    ++end;
+  }
+  if (end == pos + 6) {
+    return def;  // no digits
+  }
+  long v = 0;
+  for (size_t i = pos + 6; i < end; ++i) {
+    v = v * 10 + (query[i] - '0');
+    if (v > kEventsLimitMax) {
+      v = kEventsLimitMax;
+    }
+  }
+  return static_cast<int>(std::max(1L, v));
+}
+
+// Keyframe filename whitelist: "cam1_t1785912655988_appearance.jpg" — plain
+// alphanumeric/underscore/dash names with a .jpg suffix.  Anything else
+// (paths, dots beyond the suffix, other extensions) is rejected.
+bool valid_keyframe_name(const std::string& name) {
+  if (name.size() < 8 || name.size() > 255) {
+    return false;
+  }
+  const std::string suffix = ".jpg";
+  if (name.compare(name.size() - suffix.size(), suffix.size(), suffix) != 0) {
+    return false;
+  }
+  for (size_t i = 0; i + suffix.size() < name.size(); ++i) {
+    const char c = name[i];
+    if (!(std::isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '-')) {
+      return false;
+    }
+  }
+  return true;
+}
+
+}  // namespace
+
 // GET /dashboard — serve the static dashboard file (Stage 15).  A single
 // fixed path from config (no directory access, no user-supplied path) with
 // a 1 MiB size cap; the file is read per request so an edit shows on reload.
@@ -67,6 +164,93 @@ HttpResponse ControlServer::serve_dashboard(const std::string& request_id) {
   HttpResponse resp;
   resp.status = 200;
   resp.content_type = "text/html; charset=utf-8";
+  resp.body = std::move(body);
+  return resp;
+}
+
+// GET /events/recent?limit=N — newest-first events from the events JSONL
+// (bounded 64 KiB tail window, whole lines only, malformed lines skipped).
+// Missing file → empty list: a display endpoint must never fail the page.
+Json::Value ControlServer::json_recent_events(const std::string& query) const {
+  const int limit = parse_limit(query, 50);
+  Json::Value data;
+  data["events"] = Json::Value(Json::arrayValue);
+  if (cfg_.events_jsonl_path.empty()) {
+    return data;
+  }
+  Json::Reader reader;
+  for (const auto& line : tail_lines(cfg_.events_jsonl_path, kTailMaxBytes)) {
+    if (data["events"].size() >= static_cast<Json::Value::UInt64>(limit)) {
+      break;
+    }
+    Json::Value ev;
+    if (reader.parse(line, ev) && ev.isObject()) {
+      data["events"].append(ev);
+    }
+  }
+  return data;
+}
+
+// GET /keyframes — newest-first keyframe file names (whitelist-filtered,
+// capped at 100).  Read-only directory listing for the dashboard thumbnails.
+Json::Value ControlServer::json_keyframes() const {
+  Json::Value data;
+  data["files"] = Json::Value(Json::arrayValue);
+  if (cfg_.keyframes_dir.empty()) {
+    return data;
+  }
+  std::vector<std::string> names;
+  if (DIR* dir = ::opendir(cfg_.keyframes_dir.c_str())) {
+    while (struct dirent* ent = ::readdir(dir)) {
+      const std::string name(ent->d_name);
+      if (valid_keyframe_name(name)) {
+        names.push_back(name);
+      }
+    }
+    ::closedir(dir);
+  }
+  std::sort(names.begin(), names.end(), std::greater<std::string>());
+  if (names.size() > kKeyframesListCap) {
+    names.resize(kKeyframesListCap);
+  }
+  for (const auto& n : names) {
+    data["files"].append(n);
+  }
+  return data;
+}
+
+// GET /keyframes/<name> — serve one keyframe JPEG.  Whitelist-checked name
+// (no paths, no other extensions), bounded size; the directory comes from
+// config, never from the request.
+HttpResponse ControlServer::serve_keyframe(const std::string& request_id,
+                                           const std::string& name) {
+  if (!valid_keyframe_name(name)) {
+    return make_err(request_id, 400, "PARAM_KEYFRAME",
+                    "invalid keyframe name '" + name + "'");
+  }
+  if (cfg_.keyframes_dir.empty()) {
+    return make_err(request_id, 404, "KEYFRAME_FILE", "keyframes disabled");
+  }
+  const std::string path = cfg_.keyframes_dir + "/" + name;
+  std::ifstream in(path, std::ios::binary);
+  if (!in) {
+    return make_err(request_id, 404, "KEYFRAME_FILE",
+                    "keyframe not found: '" + name + "'");
+  }
+  in.seekg(0, std::ios::end);
+  const std::streamoff size = in.tellg();
+  if (size < 0 || size > kKeyframeMaxBytes) {
+    return make_err(request_id, 413, "KEYFRAME_FILE", "keyframe too large");
+  }
+  in.seekg(0, std::ios::beg);
+  std::string body(static_cast<size_t>(size), '\0');
+  in.read(body.data(), size);
+  if (!in) {
+    return make_err(request_id, 500, "INTERNAL", "failed to read keyframe");
+  }
+  HttpResponse resp;
+  resp.status = 200;
+  resp.content_type = "image/jpeg";
   resp.body = std::move(body);
   return resp;
 }
@@ -143,6 +327,15 @@ HttpResponse ControlServer::route(const HttpRequest& req) {
     }
     if (parts == std::vector<std::string>{"errors", "recent"}) {
       return make_ok(request_id, json_recent_errors());
+    }
+    if (parts == std::vector<std::string>{"events", "recent"}) {
+      return make_ok(request_id, json_recent_events(req.query));
+    }
+    if (parts == std::vector<std::string>{"keyframes"}) {
+      return make_ok(request_id, json_keyframes());
+    }
+    if (parts.size() == 2 && parts[0] == "keyframes") {
+      return serve_keyframe(request_id, parts[1]);
     }
     return make_err(request_id, 404, "PARAM_PATH", "unknown path '" + req.path + "'");
   }

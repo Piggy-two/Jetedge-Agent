@@ -242,7 +242,9 @@ struct ServerFixture {
 
   explicit ServerFixture(std::vector<FakeBackend::Stream> streams,
                          bool cors = false,
-                         const std::string& dashboard_file = "") {
+                         const std::string& dashboard_file = "",
+                         const std::string& events_jsonl = "",
+                         const std::string& keyframes_dir = "") {
     dir = std::filesystem::temp_directory_path() /
           ("jetedge_test_control_" + std::to_string(std::rand()));
     std::filesystem::remove_all(dir);
@@ -262,6 +264,14 @@ struct ServerFixture {
       cfg.dashboard_file = (dir / "dashboard.html").string();
       std::ofstream(cfg.dashboard_file) << "<html>dash</html>";
     }
+    // Stage 15 P1: event/keyframe feeds (files read per request, so the
+    // test may seed them after construction).
+    if (!events_jsonl.empty()) {
+      cfg.events_jsonl_path = events_jsonl;
+    }
+    if (!keyframes_dir.empty()) {
+      cfg.keyframes_dir = keyframes_dir;
+    }
     backend.streams = std::move(streams);
     const bool ok = server.start(cfg, &backend);
     CHECK(ok);
@@ -275,7 +285,9 @@ struct ServerFixture {
   HttpResponse get(const std::string& path) {
     HttpRequest req;
     req.method = "GET";
-    req.path = path;
+    const size_t q = path.find('?');  // split query like the HTTP layer does
+    req.path = path.substr(0, q == std::string::npos ? path.size() : q);
+    req.query = q == std::string::npos ? "" : path.substr(q + 1);
     return server.handle_request(req);
   }
 
@@ -409,6 +421,87 @@ static void test_cors_and_dashboard() {
         raw_http(f.server.port(), "GET /health HTTP/1.1\r\nHost: x\r\n\r\n");
     CHECK(health.find("Access-Control-Allow-Origin") == std::string::npos);
   }
+}
+
+static void test_events_and_keyframes() {
+  const std::string tmp = (std::filesystem::temp_directory_path() /
+      ("jetedge_test_ctl_evkf_" + std::to_string(std::rand()))).string();
+  const std::string ev_path = tmp + "/events.jsonl";
+  const std::string kf_dir = tmp + "/kf";
+  {
+    ServerFixture f({mk_stream("cam1", "high")}, /*cors=*/false,
+                    /*dashboard_file=*/"", ev_path, kf_dir);
+    std::filesystem::create_directories(kf_dir);
+    {
+      std::ofstream ev(ev_path);
+      ev << "{\"ts_ms\":1,\"event\":\"appearance\"}\n"
+         << "{\"ts_ms\":2,\"event\":\"count_high\"}\n"
+         << "not-json\n"
+         << "{\"ts_ms\":3,\"event\":\"zone_entry\"}\n";
+    }
+    std::ofstream(kf_dir + "/cam1_t1_appearance.jpg") << "JPEG1";
+    std::ofstream(kf_dir + "/cam2_t2_appearance.jpg") << "JPEG2";
+    std::ofstream(kf_dir + "/cam1_t3_count_high.jpg") << "JPEG3";
+    std::ofstream(kf_dir + "/evil.png") << "PNG";
+
+    // /events/recent: newest-first, malformed line skipped.
+    {
+      const HttpResponse r = f.get("/events/recent");
+      Json::Value root;
+      CHECK(Json::Reader().parse(r.body, root));
+      const Json::Value& evs = root["data"]["events"];
+      CHECK_EQ(evs.size(), 3u);
+      CHECK_EQ(evs[0]["ts_ms"].asInt(), 3);
+      CHECK_EQ(evs[1]["ts_ms"].asInt(), 2);
+      CHECK_EQ(evs[2]["ts_ms"].asInt(), 1);
+    }
+    // ?limit=N clamps the result.
+    {
+      const HttpResponse r = f.get("/events/recent?limit=1");
+      Json::Value root;
+      CHECK(Json::Reader().parse(r.body, root));
+      CHECK_EQ(root["data"]["events"].size(), 1u);
+      CHECK_EQ(root["data"]["events"][0]["ts_ms"].asInt(), 3);
+    }
+    // Missing events file → empty list (display endpoint never errors).
+    {
+      std::filesystem::remove(ev_path);
+      const HttpResponse r = f.get("/events/recent");
+      Json::Value root;
+      CHECK(Json::Reader().parse(r.body, root));
+      CHECK(root["success"].asBool());
+      CHECK_EQ(root["data"]["events"].size(), 0u);
+    }
+
+    // /keyframes: whitelist only, newest-first (name descending).
+    {
+      const HttpResponse r = f.get("/keyframes");
+      Json::Value root;
+      CHECK(Json::Reader().parse(r.body, root));
+      const Json::Value& files = root["data"]["files"];
+      CHECK_EQ(files.size(), 3u);
+      // Descending lexicographic: "cam2_t2…" > "cam1_t3…" > "cam1_t1…".
+      CHECK(files[0].asString() == "cam2_t2_appearance.jpg");
+      CHECK(files[2].asString() == "cam1_t1_appearance.jpg");
+    }
+    // Serve one keyframe: content and type match.
+    {
+      const HttpResponse img = f.get("/keyframes/cam1_t3_count_high.jpg");
+      CHECK_EQ(img.status, 200);
+      CHECK(img.content_type == "image/jpeg");
+      CHECK(img.body == "JPEG3");
+    }
+    // Whitelist rejections: traversal, other extensions, missing file.
+    // ("/keyframes/../x.jpg" splits to a different path → 404 PARAM_PATH;
+    //  "%2F" stays undecoded in the direct-handler fixture → name whitelist
+    //  rejects the '%' → 400.  Both refuse the request.)
+    CHECK_EQ(f.get("/keyframes/../x.jpg").status, 404);
+    CHECK_EQ(f.get("/keyframes/evil.png").status, 400);
+    CHECK_EQ(f.get("/keyframes/cam1_t3_count_high.png").status, 400);
+    CHECK_EQ(f.get("/keyframes/a%2Fb.jpg").status, 400);
+    CHECK_EQ(f.get("/keyframes/nonexistent.jpg").status, 404);
+  }
+  std::filesystem::remove_all(tmp);
 }
 
 // Read all non-empty lines of a file.
@@ -990,6 +1083,7 @@ int main() {
   test_audit_log();
   test_http_parse();
   test_cors_and_dashboard();
+  test_events_and_keyframes();
   test_read_endpoints();
   test_write_flow_success();
   test_write_flow_invalid_params();
