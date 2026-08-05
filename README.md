@@ -306,6 +306,7 @@ Agent 不参与逐帧决策，也不直接操作 DeepStream 内部对象。
 
 ### 后续阶段
 
+- [ ] **Stage 15：Web 可视化仪表盘与一键演示**（2026-08-05 立项，planned）——Control API 加 CORS（配置可关）+ 零依赖静态仪表盘 `web/dashboard.html`（实时 FPS/延迟分位数/调度状态灯/事件流/关键帧 + interval/priority/快照/回滚操作面板，全部复用现有端点）+ `GET /events/recent`、`GET /keyframes/{name}` 只读小端点 + `scripts/demo_run.sh` 一键演示编排（默认开源视频文件源配置，42s 最快路径）。明确不做：前端框架/构建、管道热路径改动、Docker/Grafana（P2 另行请求）。详见 `docs/stage15_plan.md`；
 - [x] ftrace 和 CPU Affinity 分析（2026-08-04，`docs/stage10_ftrace.md`）；
 - [x] Control API、快照和回滚（2026-08-04，`docs/stage11_control.md`）；
 - [x] Agent 白名单工具调用、验证、审计和回滚（2026-08-04，含 run_benchmark 端点，`docs/stage12_agent.md`）；

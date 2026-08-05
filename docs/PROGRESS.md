@@ -175,6 +175,7 @@
 
 ## 后续阶段
 
+- **Stage 15（planned，2026-08-05 立项）**：Web 可视化仪表盘与一键演示——CORS（配置可关）+ 零依赖静态仪表盘 + /events/recent、/keyframes 只读端点 + demo_run.sh 一键编排；管道热路径零改动，Docker/Grafana 为 P2 另行请求。见 `docs/stage15_plan.md`
 - ~~Stage 7：Qwen + DeepSeek API、异步队列和降级策略~~ → 已完成，见 `docs/stage7_llm.md`
 - ~~Stage 8：RTSP 故障隔离与恢复~~ → 已完成，见 `docs/stage8_rtsp.md`
 - ~~Stage 9：确定性 C++ 动态调度器（NORMAL | PRESSURE | THERMAL | CRITICAL | RECOVERY，含自适应推理间隔）~~ → 已完成，见 `docs/stage9_scheduler.md`
