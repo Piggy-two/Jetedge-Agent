@@ -312,7 +312,8 @@ Agent 不参与逐帧决策，也不直接操作 DeepStream 内部对象。
 - [x] Control API、快照和回滚（2026-08-04，`docs/stage11_control.md`）；
 - [x] Agent 白名单工具调用、验证、审计和回滚（2026-08-04，含 run_benchmark 端点，`docs/stage12_agent.md`）；
 - [x] INT8 PTQ 与精度回归（2026-08-04，`docs/stage13_int8.md`——工具链完成、精度未达保守阈值按纪律回退 FP16、性能收益实测记录）；
-- [x] 稳定性测试、Demo 和项目包装（2026-08-05，`docs/stage14_stability.md` + `docs/demo.md`——2h 稳定性、Demo 1-4、打包与简历指标汇总 `docs/resume_summary.md`）。
+- [x] 稳定性测试、Demo 和项目包装（2026-08-05，`docs/stage14_stability.md` + `docs/demo.md`——2h 稳定性、Demo 1-4、打包与简历指标汇总 `docs/resume_summary.md`）；
+- [x] **工厂危险区域人员闯入监控场景测试**（2026-08-06，`docs/scenario_factory_intrusion_report.md`）——4 路工厂语义 RTSP 流 + person 连续追踪 + restricted_zone 闯入事件去重 + 关键帧异步 Qwen 复核 + 新增确定性 Decision Router 告警分级（confirmed_alert/manual_review/archived/local_rule_only，含单元测试）+ cam4 RTSP 故障注入与隔离 + 安全 Agent 优化闭环（实测 P95 降低达标保留）+ 15 分钟稳定性与 6 类 JSONL 全量校验。
 
 ---
 
@@ -965,6 +966,7 @@ Policy 校验候选工具，保存快照，执行低风险调整，重新 Benchm
 | `docs/safety.md` | Agent 权限、验证和回滚 |
 | `docs/demo.md` | Demo 1-4 演示指南与实测验收 |
 | `docs/stage15_plan.md` | Stage 15 Web 仪表盘与一键演示验收报告 |
+| `docs/scenario_factory_intrusion_report.md` | 工厂危险区域人员闯入监控场景测试报告（Decision Router、Qwen 复核、RTSP 故障注入、Agent 闭环、15 分钟稳定性） |
 | `docs/resume_summary.md` | 简历项目描述与全项目量化指标汇总 |
 | `docs/project_introduction.md` | 简历用详细项目介绍（背景、架构、分阶段详解、难点攻关、中英文简历示例） |
 

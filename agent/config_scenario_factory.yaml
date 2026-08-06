@@ -1,0 +1,6 @@
+# Scenario run overrides — keep the accepted Stage 12+ agent audit/report
+# artifacts untouched.  Only the output paths differ; every tuning threshold
+# (p95_trivial 20ms, ratio 0.15, abs 8ms, fps tolerance 5%, max actions 2,
+# deadline 600s) stays at the accepted defaults — no acceptance bars lowered.
+audit_file: logs/scenario_factory_agent/audit.jsonl
+report_dir: logs/scenario_factory_agent/reports

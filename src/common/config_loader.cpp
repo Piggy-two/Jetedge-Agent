@@ -146,6 +146,8 @@ bool load_streams_config(const std::string& path, StreamsConfig& config, std::st
         config.llm.keyframe_dir = llm_node["keyframe_dir"].as<std::string>();
       if (llm_node["cloud_output_path"])
         config.llm.cloud_output_path = llm_node["cloud_output_path"].as<std::string>();
+      if (llm_node["incidents_path"])
+        config.llm.incidents_path = llm_node["incidents_path"].as<std::string>();
       if (llm_node["deepseek_interval_sec"]) {
         const int v = llm_node["deepseek_interval_sec"].as<int>();
         if (v < 0) { error_out = "llm.deepseek_interval_sec must be >= 0"; return false; }

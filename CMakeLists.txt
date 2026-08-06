@@ -40,6 +40,7 @@ set(JETEDGE_SOURCES
   src/events/keyframe_writer.cpp
   src/inference/metadata_probe.cpp
   src/llm/circuit_breaker.cpp
+  src/llm/decision_router.cpp
   src/llm/http_client.cpp
   src/llm/llm_router.cpp
   src/llm/prompt_manager.cpp
@@ -74,6 +75,7 @@ set(JETEDGE_HEADERS
   include/jetedge/inference/inference_config.h
   include/jetedge/inference/metadata_probe.h
   include/jetedge/llm/circuit_breaker.h
+  include/jetedge/llm/decision_router.h
   include/jetedge/llm/http_client.h
   include/jetedge/llm/llm_config.h
   include/jetedge/llm/llm_router.h
@@ -189,6 +191,12 @@ add_executable(test_image_reader tests/test_image_reader.cpp
 target_include_directories(test_image_reader PRIVATE ${CMAKE_SOURCE_DIR}/include)
 target_link_libraries(test_image_reader PRIVATE Threads::Threads)
 
+add_executable(test_decision_router tests/test_decision_router.cpp
+               src/llm/decision_router.cpp src/llm/prompt_manager.cpp)
+target_include_directories(test_decision_router PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(test_decision_router PRIVATE Threads::Threads
+                      PkgConfig::JSONCPP)
+
 enable_testing()
 add_test(NAME event_engine COMMAND test_event_engine)
 add_test(NAME circuit_breaker COMMAND test_circuit_breaker)
@@ -198,5 +206,6 @@ add_test(NAME scheduler_policy COMMAND test_scheduler_policy)
 add_test(NAME control_api COMMAND test_control_api)
 add_test(NAME metrics_registry COMMAND test_metrics_registry)
 add_test(NAME image_reader COMMAND test_image_reader)
+add_test(NAME decision_router COMMAND test_decision_router)
 add_test(NAME accuracy_math COMMAND python3
          ${CMAKE_SOURCE_DIR}/scripts/tests/test_accuracy_math.py)

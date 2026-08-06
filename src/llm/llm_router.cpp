@@ -60,6 +60,10 @@ bool LlmRouter::init(const LlmConfig& config,
     }
   }
 
+  // Deterministic post-Qwen decision router (incidents JSONL).
+  decision_ = std::make_unique<DecisionRouter>();
+  decision_->init(config_.incidents_path, stream_ids);
+
   queue_ = std::make_unique<BoundedPriorityQueue<LlmRequest>>(
       static_cast<size_t>(config_.queue.max_size > 0 ? config_.queue.max_size : 32));
   http_ = std::make_unique<HttpClient>();
@@ -151,6 +155,7 @@ bool LlmRouter::route_event(const events::EventRecord& e,
   out_req.event_type = event_type_str(e.type);
   out_req.stream_idx = e.stream_idx;
   out_req.orig_ts_ms = e.ts_ms;
+  out_req.event_copy = e;
 
   // Build the prompt and the image path list (full paths from keyframe dir).
   std::vector<std::string> image_paths;
@@ -171,6 +176,12 @@ bool LlmRouter::enqueue_event(const events::EventRecord& e,
 
   LlmRequest req;
   if (!route_event(e, keyframe_name, req)) {
+    // Safety-relevant events that never reach the queue still need a
+    // deterministic decision: local rule stands (incident recorded).
+    if (decision_ && e.type == events::EventType::kZoneEntry) {
+      decision_->decide(e, QwenOutcome::kNotSubmitted, {},
+                        "not_routed");
+    }
     return false;
   }
   const RequestPriority priority = req.priority;
@@ -186,6 +197,9 @@ bool LlmRouter::enqueue_event(const events::EventRecord& e,
     ++stats_.shed;
     LOG_WARN("llm", "request queue full — shed %s event (stream %d)",
              event_type.c_str(), stream_idx);
+    if (decision_) {
+      decision_->decide(e, QwenOutcome::kNotSubmitted, {}, "queue_shed");
+    }
     return false;
   }
   return true;
@@ -232,6 +246,16 @@ void LlmRouter::process_request(LlmRequest req) {
   CircuitBreaker* cb =
       (req.provider == LlmProvider::kQwen) ? cb_qwen_.get() : cb_deepseek_.get();
 
+  // Every terminal outcome of a Qwen visual review ends in a deterministic
+  // decision (incidents row); DeepSeek metrics rows produce no incidents.
+  const auto decide = [this, &req](QwenOutcome outcome,
+                                   const ReviewOutcome& review,
+                                   const std::string& detail) {
+    if (decision_ && req.provider == LlmProvider::kQwen) {
+      decision_->decide(req.event_copy, outcome, review, detail);
+    }
+  };
+
   // Circuit breaker gate.
   if (!cb->allow_request()) {
     std::lock_guard<std::mutex> lock(stats_mu_);
@@ -239,6 +263,7 @@ void LlmRouter::process_request(LlmRequest req) {
     LOG_WARN("llm", "circuit open for %s — request %llu skipped",
              llm_provider_str(req.provider),
              static_cast<unsigned long long>(req.request_id));
+    decide(QwenOutcome::kNotSubmitted, {}, "circuit_open");
     return;
   }
 
@@ -251,11 +276,13 @@ void LlmRouter::process_request(LlmRequest req) {
   if (ep.endpoint.empty()) {
     LOG_WARN("llm", "%s endpoint not configured — request dropped",
              llm_provider_str(req.provider));
+    decide(QwenOutcome::kNotSubmitted, {}, "endpoint_empty");
     return;
   }
   if (api_key.empty()) {
     LOG_WARN("llm", "%s API key missing — request dropped (pipeline unaffected)",
              llm_provider_str(req.provider));
+    decide(QwenOutcome::kNotSubmitted, {}, "api_key_missing");
     return;
   }
 
@@ -275,6 +302,7 @@ void LlmRouter::process_request(LlmRequest req) {
   }
   if (body.empty()) {
     LOG_WARN("llm", "%s request body build failed", llm_provider_str(req.provider));
+    decide(QwenOutcome::kNotSubmitted, {}, "body_build_failed");
     return;
   }
 
@@ -315,6 +343,13 @@ void LlmRouter::process_request(LlmRequest req) {
                llm_provider_str(req.provider), req.event_type.c_str(),
                static_cast<unsigned long long>(req.request_id),
                static_cast<unsigned long long>(latency_ms), resp.status_code);
+      ReviewOutcome review;
+      if (!DecisionRouter::parse_review(result.result_json, review)) {
+        // Should not happen (schema was validated), but fail safe.
+        LOG_WARN("llm", "review JSON re-parse failed for req %llu — manual review",
+                 static_cast<unsigned long long>(req.request_id));
+      }
+      decide(QwenOutcome::kSucceeded, review, "");
     } else {
       // Preserve the original error context (CLAUDE.md §10): log whether
       // extraction or schema validation failed and a truncated raw body
@@ -326,6 +361,7 @@ void LlmRouter::process_request(LlmRequest req) {
       LOG_WARN("llm", "%s response schema invalid (extracted=%d): %s | raw=%.240s",
                llm_provider_str(req.provider), extracted ? 1 : 0,
                result.error.c_str(), resp.body.c_str());
+      decide(QwenOutcome::kFailed, {}, "schema_invalid");
     }
   } else {
     result.error = resp.error.empty()
@@ -337,6 +373,7 @@ void LlmRouter::process_request(LlmRequest req) {
     LOG_ERROR("llm", "", "", "LLM010", "%s call failed: %s (http %d, %llu ms)",
               llm_provider_str(req.provider), result.error.c_str(),
               resp.status_code, static_cast<unsigned long long>(latency_ms));
+    decide(QwenOutcome::kFailed, {}, result.error);
   }
 
   write_cloud_result(req, result);

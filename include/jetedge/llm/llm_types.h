@@ -9,6 +9,8 @@
 #include <string>
 #include <vector>
 
+#include "jetedge/events/event_types.h"
+
 namespace jetedge {
 namespace llm {
 
@@ -52,6 +54,11 @@ struct LlmRequest {
 
   // DeepSeek metrics diagnosis
   std::string metrics_json;             // aggregated metrics payload
+
+  // Full event record (Qwen visual review) — carried so the deterministic
+  // Decision Router can write incidents with track/bbox/zone context at the
+  // request's terminal outcome (success, failure, or dropped without sending).
+  events::EventRecord event_copy;
 
   // Routed away (request dropped without sending).  Logged, not fatal.
   bool shed = false;

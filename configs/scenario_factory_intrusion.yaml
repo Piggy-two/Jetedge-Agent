@@ -1,0 +1,170 @@
+# JetEdge-Agent factory dangerous-area intrusion scenario (2026-08-06).
+#
+# 4 RTSP streams published by scripts/rtsp_serve_factory.sh from the
+# intel-iot-devkit sample videos (CC-BY 4.0, /home/seeed/jetedge-openvideos/):
+#   cam1  factory entrance (person-bicycle-car-detection.mp4, 12 fps)
+#   cam2  parking area     (car-detection.mp4,               12.5 fps)
+#   cam3  personnel walkway with restricted_zone
+#         (one-by-one-person-detection.mp4, 10 fps — long continuous person
+#          tracks, ideal for track_id continuity + zone_entry evidence)
+#   cam4  ordinary corridor (people-detection.mp4, 12 fps — fault-injection
+#          target in this scenario)
+#
+# The restricted zone lives in mux output space (1280x720) and is derived
+# from real person-detection data (openvideo run): walkers' bbox centers sit
+# around x 700-800, y 300-350; the rect below covers that path.
+#
+# Deterministic post-Qwen Decision Router: every routed zone_entry event gets
+# one incidents row (logs/scenario_factory_incidents.jsonl) at its terminal
+# outcome — confirmed_alert / manual_review / archived / local_rule_only.
+#
+# SECURITY NOTE: control.host 0.0.0.0 + cors exposes the Control API
+# (including the §16 write ops) on the LAN without authentication — trusted
+# networks only, same convention as configs/demo_dashboard.yaml.
+
+rtsp:
+  enable: true
+  live_source: true
+  transport: tcp
+  watch_timeout_sec: 5
+  first_frame_timeout_sec: 12
+  max_retries: 5
+  backoff_base_ms: 1000
+  backoff_max_ms: 15000
+  verify_sec: 5
+  min_fps: 1.0
+  rtspsrc_latency_ms: 500
+
+mux:
+  output_width: 1280
+  output_height: 720
+  batch_timeout_usec: 40000
+
+inference:
+  enable: true
+  config_file_path: configs/nvinfer_yolo11s_b4_fp16.txt
+  gie_unique_id: 1
+
+tracker:
+  enable: true
+  ll_lib_file: /opt/nvidia/deepstream/deepstream-7.1/lib/libnvds_nvmultiobjecttracker.so
+  ll_config_file: /opt/nvidia/deepstream/deepstream-7.1/samples/configs/deepstream-app/config_tracker_NvDCF_perf.yml
+  width: 960
+  height: 544
+  gpu_id: 0
+
+output:
+  jsonl_path: /home/seeed/projects/jetedge-agent/logs/scenario_factory_detections.jsonl
+  labels_file_path: /home/seeed/projects/jetedge-agent/configs/coco_labels.txt
+  fps_report_interval_sec: 5
+
+events:
+  enable: true
+  jsonl_path: /home/seeed/projects/jetedge-agent/logs/scenario_factory_events.jsonl
+  keyframe_dir: /home/seeed/projects/jetedge-agent/logs/keyframes_scenario_factory
+  max_keyframes: 150
+  jpeg_quality: 85
+  disappear_grace_frames: 15
+  count_threshold: 3
+  count_hysteresis: 1
+  classes: [0]                      # person only (factory intrusion)
+  zones:
+    - name: restricted_zone
+      stream_id: cam3
+      rect: [560, 250, 500, 200]    # mux 1280x720; covers walkers' bbox centers
+
+llm:
+  enable: true
+  keyframe_dir: /home/seeed/projects/jetedge-agent/logs/keyframes_scenario_factory
+  cloud_output_path: /home/seeed/projects/jetedge-agent/logs/scenario_factory_analysis.jsonl
+  incidents_path: /home/seeed/projects/jetedge-agent/logs/scenario_factory_incidents.jsonl
+  # C++ periodic DeepSeek diagnosis OFF: the Python runtime Agent uses its own
+  # DeepSeek client (agent/deepseek_client.py), so the analysis JSONL stays
+  # qwen-only — clean evidence for the Qwen review / FPS correlation.
+  deepseek_interval_sec: 0
+
+  qwen:
+    endpoint: "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
+    model: "qwen3.6-flash"
+    max_tokens: 512
+    timeout_sec: 30
+    max_retries: 2
+    thinking_mode: false
+
+  deepseek:
+    endpoint: "https://api.deepseek.com/v1/chat/completions"
+    model: "deepseek-v4-flash"
+    max_tokens: 512
+    timeout_sec: 30
+    max_retries: 2
+    thinking_mode: false
+
+  queue:
+    max_size: 32
+    worker_threads: 1
+
+  circuit_breaker:
+    failure_threshold: 5
+    reset_timeout_sec: 30
+    half_open_success_threshold: 2
+
+  routing:
+    appearance_to_qwen: false
+    disappearance_to_qwen: false
+    zone_entry_to_qwen: true      # safety-relevant route (scenario requirement)
+    count_high_to_qwen: false
+
+scheduler:
+  enable: true
+  sample_interval_sec: 2
+  pressure_cpu_enter: 70.0
+  pressure_cpu_exit: 50.0
+  thermal_temp_enter: 75.0
+  thermal_temp_exit: 70.0
+  critical_temp_enter: 82.0
+  critical_temp_exit: 76.0
+  min_hold_sec: 15
+  cooldown_sec: 30
+  max_adjustments_per_window: 2
+  adjust_window_sec: 120
+
+control:
+  enable: true
+  host: 0.0.0.0
+  port: 8091
+  cors: true
+  dashboard_file: web/dashboard.html
+  state_dir: /home/seeed/projects/jetedge-agent/logs/control_scenario_factory
+  max_body_bytes: 4096
+  read_timeout_ms: 5000
+  max_infer_interval: 5
+  restart_min_interval_ms: 30000
+  max_snapshots: 32
+  benchmark_min_duration_s: 5
+  benchmark_max_duration_s: 120
+  benchmark_default_duration_s: 60
+
+streams:
+  - id: cam1
+    type: rtsp
+    uri: rtsp://127.0.0.1:8554/cam1
+    priority: high
+    expected_fps: 12
+
+  - id: cam2
+    type: rtsp
+    uri: rtsp://127.0.0.1:8554/cam2
+    priority: normal
+    expected_fps: 12.5
+
+  - id: cam3
+    type: rtsp
+    uri: rtsp://127.0.0.1:8554/cam3
+    priority: normal
+    expected_fps: 10
+
+  - id: cam4
+    type: rtsp
+    uri: rtsp://127.0.0.1:8554/cam4
+    priority: low
+    expected_fps: 12

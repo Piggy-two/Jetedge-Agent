@@ -47,6 +47,7 @@ struct LlmConfig {
   bool enable = false;                // master switch (default off)
   std::string keyframe_dir;           // base dir to resolve keyframe paths
   std::string cloud_output_path;      // analysis JSONL (empty = no file)
+  std::string incidents_path;         // deterministic decision JSONL (empty = off)
 
   ProviderEndpoint qwen;              // visual event review
   ProviderEndpoint deepseek;          // metrics / logs diagnosis

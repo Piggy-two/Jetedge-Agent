@@ -20,6 +20,7 @@
 
 #include "jetedge/events/event_types.h"
 #include "jetedge/llm/circuit_breaker.h"
+#include "jetedge/llm/decision_router.h"
 #include "jetedge/llm/http_client.h"
 #include "jetedge/llm/llm_config.h"
 #include "jetedge/llm/llm_types.h"
@@ -86,6 +87,7 @@ class LlmRouter {
   std::unique_ptr<PromptManager> prompts_;
   std::unique_ptr<CircuitBreaker> cb_qwen_;
   std::unique_ptr<CircuitBreaker> cb_deepseek_;
+  std::unique_ptr<DecisionRouter> decision_;  // deterministic alert tiers
 
   std::ofstream analysis_jsonl_;
   mutable std::mutex analysis_mu_;
